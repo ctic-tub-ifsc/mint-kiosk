@@ -1,15 +1,79 @@
 #!/bin/bash
 
 # Script de Configuração do Kiosk para Linux Mint
-# Versão corrigida - SEM refresh cego, com diagnóstico inteligente
+# Versão unificada com suporte a PWA e detecção inteligente de travamentos
+# Autor: Baseado em scripts validados para Raspberry Pi e Linux Mint
 
-set -e
+set -e  # Sai imediatamente se algum comando falhar
 
 # Cores para output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m'
+NC='\033[0m' # No Color
+
+# ============================================
+#          FUNÇÃO DE VALIDAÇÃO DE URL
+# ============================================
+
+validate_url() {
+    local input_url="$1"
+    
+    # Remove espaços
+    input_url=$(echo "$input_url" | xargs)
+    
+    # Se vazio, erro
+    [[ -z "$input_url" ]] && return 1
+    
+    # Converte para minúsculas (URLs são case-insensitive para domínio)
+    input_url=$(echo "$input_url" | tr '[:upper:]' '[:lower:]')
+    
+    # Corrige protocolos mal digitados
+    input_url=$(echo "$input_url" | sed \
+        -e 's/^htp:\/\//https:\/\//' \
+        -e 's/^htt:\/\//https:\/\//' \
+        -e 's/^htps:\/\//https:\/\//' \
+        -e 's/^http:\/\/https:\/\//https:\/\//' \
+        -e 's/^https:\/\/http:\/\//https:\/\//')
+    
+    # Extrai parte do domínio (sem protocolo)
+    local domain_part="$input_url"
+    if [[ "$input_url" =~ ^[a-zA-Z]+:/* ]]; then
+        domain_part=$(echo "$input_url" | sed -E 's#^[a-zA-Z]+:/*##')
+    fi
+    
+    # Remove barras extras no início e fim
+    domain_part=$(echo "$domain_part" | sed 's#^/*##' | sed 's#/*$##')
+    
+    # Se tiver caminho, preserva
+    local path=""
+    if [[ "$domain_part" =~ ^([^/]+)(/.*)?$ ]]; then
+        domain_part="${BASH_REMATCH[1]}"
+        path="${BASH_REMATCH[2]}"
+    fi
+    
+    # Verifica se é IP ou domínio
+    if [[ ! "$input_url" =~ ^https?:// ]]; then
+        if [[ "$domain_part" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(:[0-9]+)?$ ]]; then
+            # É IP, usa http://
+            final_url="http://$domain_part"
+        else
+            # É domínio, usa https://
+            final_url="https://$domain_part"
+        fi
+    else
+        final_url="$input_url"
+    fi
+    
+    # Adiciona caminho se existir
+    if [[ -n "$path" ]]; then
+        # Remove barras duplicadas
+        path=$(echo "$path" | sed 's#//*#/#g')
+        final_url="${final_url}${path}"
+    fi
+    
+    echo "$final_url"
+}
 
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Instalação do Sistema Kiosk - PWA     ${NC}"
@@ -22,16 +86,45 @@ echo -e "${GREEN}========================================${NC}"
 INSTALL_DIR="/home/$(logname)/kiosk"
 LOG_FILE="/var/log/kiosk_monitor.log"
 CHROMIUM_USER_DATA="/home/$(logname)/.config/chromium-kiosk"
-SCREENSHOT_DIR="/var/log/kiosk_screenshots"  # Mudado para /var/log para persistência
+SCREENSHOT_DIR="/var/log/kiosk_screenshots"
 
-# Coletar URL
-echo -e "${YELLOW}Por favor, digite a URL do Mural (Ex. https://mural.exemplo.com.br):${NC}"
-read -p "URL: " KIOSK_URL
-
-if [[ -z "$KIOSK_URL" ]]; then
-    echo -e "${RED}ERRO: URL não fornecida. Abortando.${NC}"
-    exit 1
-fi
+# Coletar URL com validação
+while true; do
+    echo -e "${YELLOW}Por favor, digite a URL do Mural:${NC}"
+    echo -e "${YELLOW}Exemplos:${NC}"
+    echo -e "  • https://mural.exemplo.com.br"
+    echo -e "  • 192.168.1.100:8080"
+    echo -e "  • mural.intranet.local"
+    read -p "URL: " RAW_URL
+    
+    # Valida e corrige a URL
+    KIOSK_URL=$(validate_url "$RAW_URL")
+    
+    # Se validação falhou
+    if [[ -z "$KIOSK_URL" ]]; then
+        echo -e "${RED}ERRO: URL não pode estar vazia. Tente novamente.${NC}"
+        continue
+    fi
+    
+    # Mostra o resultado
+    echo -e "${GREEN}✓ URL processada: $KIOSK_URL${NC}"
+    
+    # Teste rápido de conectividade
+    echo -e "${YELLOW}Testando conexão...${NC}"
+    if curl --output /dev/null --silent --head --fail --max-time 5 "$KIOSK_URL"; then
+        echo -e "${GREEN}✓ URL acessível!${NC}"
+    else
+        echo -e "${YELLOW}⚠ ATENÇÃO: URL parece inacessível no momento${NC}"
+        echo -e "${YELLOW}  O sistema continuará a instalação, mas o mural pode não carregar até que a rede esteja disponível.${NC}"
+    fi
+    
+    echo -e "${YELLOW}Confirmar URL? (s/N):${NC}"
+    read -p "> " CONFIRM
+    
+    if [[ "$CONFIRM" =~ ^[Ss]$ ]]; then
+        break
+    fi
+done
 
 # Configuração VNC (opcional)
 echo -e "${YELLOW}Deseja configurar acesso VNC? (s/N):${NC}"
@@ -61,7 +154,7 @@ sudo apt-get install -y \
     imagemagick \
     gnome-screenshot \
     ufw \
-    bc  # Necessário para cálculos matemáticos
+    bc
 
 # ============================================
 #          SCRIPT PRINCIPAL DO KIOSK
@@ -71,7 +164,7 @@ sudo apt-get install -y \
 echo -e "${GREEN}[2/8] Criando script do kiosk com monitor inteligente...${NC}"
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$SCREENSHOT_DIR"
-sudo chmod 755 "$SCREENSHOT_DIR"  # Permissões para escrita de logs
+sudo chmod 755 "$SCREENSHOT_DIR"
 
 cat > "$INSTALL_DIR/kiosk.sh" << 'EOF'
 #!/bin/bash
@@ -152,7 +245,6 @@ check_chromium_health() {
     fi
     
     # Verificar se a janela está congelada (não responde a eventos)
-    # Usando xdotool para tentar mover o mouse (sem mover de verdade)
     if ! xdotool search --onlyvisible --class "chromium" windowfocus 2>/dev/null; then
         log "ERRO: Janela Chromium não aceita foco"
         return 1
@@ -162,7 +254,6 @@ check_chromium_health() {
     idle_time=$(xprintidle 2>/dev/null || echo 0)
     if [[ "$idle_time" -gt "$((IDLE_THRESHOLD * 1000))" ]]; then
         log "AVISO: Janela inativa por $(($idle_time / 1000)) segundos"
-        # Não considera erro ainda, só aviso
     fi
     
     return 0
@@ -179,7 +270,7 @@ check_url_health() {
     http_code=$(curl -o /dev/null -s -w "%{http_code}" --max-time 15 --connect-timeout 10 "$KIOSK_URL")
     end_time=$(date +%s%N)
     
-    response_time=$(( (end_time - start_time) / 1000000 ))  # em milissegundos
+    response_time=$(( (end_time - start_time) / 1000000 ))
     
     if [[ "$http_code" == "200" ]]; then
         log "URL OK (${response_time}ms)"
@@ -192,10 +283,7 @@ check_url_health() {
 
 # Função para verificar se o PWA tem conteúdo em cache
 check_cached_content() {
-    # Tenta acessar via Chromium em modo headless para ver se há service worker
-    # Uma verificação mais simples: ver se o Chromium consegue carregar algo
     if DISPLAY=:0 xdotool search --onlyvisible --class "chromium" key --clearmodifiers "Ctrl+l" 2>/dev/null; then
-        # Conseguiu interagir, provavelmente tem conteúdo
         return 0
     fi
     return 1
@@ -205,20 +293,16 @@ check_cached_content() {
 restart_chromium() {
     log "REINICIANDO Chromium completamente..."
     
-    # Capturar diagnóstico antes de matar
     capture_diagnostic_screenshot "pre_restart"
     
-    # Matar processos
     pkill -f chromium
     sleep 5
     
-    # Limpar preferências corrompidas
     if [[ -f "$CHROMIUM_USER_DATA/Default/Preferences" ]]; then
         sed -i 's/"exited_cleanly":false/"exited_cleanly":true/' "$CHROMIUM_USER_DATA/Default/Preferences"
         sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/' "$CHROMIUM_USER_DATA/Default/Preferences"
     fi
     
-    # Iniciar Chromium - SEM incognito para manter cache offline
     export DISPLAY=:0
     chromium \
         --user-data-dir="$CHROMIUM_USER_DATA" \
@@ -236,33 +320,28 @@ restart_chromium() {
         --app="$KIOSK_URL" &
     
     log "Chromium reiniciado (PID: $!)"
-    sleep 10  # Aguardar inicialização
+    sleep 10
 }
 
 # Refresh suave - APENAS quando necessário
-# NÃO é F5 cego - tenta métodos mais inteligentes
 soft_refresh() {
     local reason="$1"
     
     log "Executando refresh inteligente (motivo: $reason)..."
     export DISPLAY=:0
     
-    # Capturar screenshot antes do refresh
     capture_diagnostic_screenshot "pre_refresh_${reason}"
     
-    # Método 1: Tentar enviar F5 (funciona na maioria dos casos)
     if xdotool search --onlyvisible --class "chromium" windowactivate --sync key --clearmodifiers F5 2>/dev/null; then
         log "Refresh via F5 executado"
         return 0
     fi
     
-    # Método 2: Tentar recarregar via JavaScript (mais suave)
     if xdotool search --onlyvisible --class "chromium" windowactivate --sync key --clearmodifiers "ctrl+r" 2>/dev/null; then
         log "Refresh via Ctrl+R executado"
         return 0
     fi
     
-    # Método 3: Se nada funcionar, talvez precise reiniciar
     log "Falha ao executar refresh suave"
     return 1
 }
@@ -275,13 +354,11 @@ log "=== INICIANDO SISTEMA KIOSK ==="
 log "URL: $KIOSK_URL"
 log "Data: $(date)"
 
-# Configurar ambiente X
 export DISPLAY=:0
 xset s off
 xset -dpms
 unclutter -idle 0.5 -root &
 
-# Iniciar Chromium
 restart_chromium
 
 # ============================================
@@ -295,7 +372,6 @@ last_url_check=0
 while true; do
     current_time=$(date +%s)
     
-    # 1. VERIFICAÇÃO DE SAÚDE DO CHROMIUM
     if ! check_chromium_health; then
         ((consecutive_failures++))
         log "Falha de saúde #$consecutive_failures"
@@ -305,7 +381,6 @@ while true; do
             restart_chromium
             consecutive_failures=0
         else
-            # Tentar refresh suave
             if soft_refresh "chromium_unhealthy"; then
                 log "Refresh suave recuperou o Chromium"
                 consecutive_failures=0
@@ -314,7 +389,6 @@ while true; do
             fi
         fi
     else
-        # Chromium saudável - verificar URL periodicamente
         if [[ $((current_time - last_url_check)) -ge $OFFLINE_CHECK_INTERVAL ]]; then
             if check_url_health; then
                 if [[ "$was_offline" == true ]]; then
@@ -327,7 +401,6 @@ while true; do
                 was_offline=true
                 log "URL offline - aguardando recuperação da rede"
                 
-                # Verificar se há conteúdo em cache
                 if check_cached_content; then
                     log "PWA exibindo conteúdo em cache - OK"
                 else
@@ -337,11 +410,9 @@ while true; do
             last_url_check=$current_time
         fi
         
-        # Reset contador se saudável
         consecutive_failures=0
     fi
     
-    # Limpeza de logs (a cada hora aproximadamente)
     if [[ $((current_time % 3600)) -lt $CHECK_INTERVAL ]]; then
         if [[ -f "$LOG_FILE" ]] && [[ $(wc -l < "$LOG_FILE") -gt 1000 ]]; then
             tail -n 1000 "$LOG_FILE" > "${LOG_FILE}.tmp"
@@ -370,13 +441,10 @@ EMERGENCY_FILE="/tmp/kiosk_emergency"
 
 echo "$(date) - Script de emergência executado manualmente" >> "$LOG_FILE"
 
-# Verifica se há um arquivo de flag de emergência
 if [[ -f "$EMERGENCY_FILE" ]]; then
-    # Só executa refresh se houver flag de emergência
     export DISPLAY=:0
     xdotool search --onlyvisible --class "chromium" key F5
     
-    # Remove flag após executar
     rm -f "$EMERGENCY_FILE"
     echo "$(date) - Refresh de emergência executado" >> "$LOG_FILE"
 fi
@@ -416,7 +484,6 @@ EOF
 # ============================================
 
 echo -e "${GREEN}[5/8] Removendo crons agressivos (se existirem)...${NC}"
-# Remover qualquer cron antigo com F5
 (crontab -u $(logname) -l 2>/dev/null | grep -v "xdotool\|F5\|refresh" || true) | crontab -u $(logname) -
 
 # ============================================
@@ -477,7 +544,7 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "URL: $KIOSK_URL"
 echo -e "Modo: PWA com cache offline habilitado"
 echo -e "Monitor: Inteligente (sem refresh cego)"
-echo -e "Screenshots: Apenas em falhas (máx $MAX_SCREENSHOTS)"
+echo -e "Screenshots: Apenas em falhas (máx 10)"
 echo -e "Logs: $LOG_FILE"
 echo -e ""
 echo -e "${YELLOW}IMPORTANTE:${NC}"
