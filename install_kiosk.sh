@@ -25,7 +25,7 @@ CHROMIUM_USER_DATA="/home/$(logname)/.config/chromium-kiosk"
 SCREENSHOT_DIR="/var/log/kiosk_screenshots"  # Mudado para /var/log para persistência
 
 # Coletar URL
-echo -e "${YELLOW}Por favor, digite a URL do PWA/Mural:${NC}"
+echo -e "${YELLOW}Por favor, digite a URL do Mural (Ex. https://mural.exemplo.com.br):${NC}"
 read -p "URL: " KIOSK_URL
 
 if [[ -z "$KIOSK_URL" ]]; then
