@@ -8,8 +8,9 @@
 #   - VNC sem systemd user (só autostart)
 #   - Chromium via Flatpak (evita dependência do snapd)
 #   - Configurações Cinnamon corrigidas (sem erros de chave)
-#   - Permissões de log ajustadas (resolve "Permissão negada")
-#   - Chromium com opções extras de estabilidade
+#   - Permissões de log ajustadas
+#   - Chromium com opções extras de estabilidade e prevenção de login
+#   - Script externo para execução controlada do Chromium
 # Autor: Baseado em scripts validados para Raspberry Pi e Linux Mint
 
 set -e  # Sai imediatamente se algum comando falhar
@@ -182,17 +183,153 @@ sudo apt-get install -y \
     gnome-screenshot \
     bc \
     net-tools \
-    flatpak  # Necessário para Chromium via Flatpak
+    flatpak \
+    mesa-utils
 
 # Adicionar repositório Flathub
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 
 # ============================================
-#          SCRIPT PRINCIPAL DO KIOSK
-#         (Versão corrigida - sem refresh cego)
+#          SCRIPT DE EXECUÇÃO DO CHROMIUM
 # ============================================
 
-echo -e "${GREEN}[3/8] Criando script do kiosk com monitor inteligente...${NC}"
+echo -e "${GREEN}[3/8] Criando script de execução do Chromium...${NC}"
+cat > "$INSTALL_DIR/run_chromium.sh" << 'EOF'
+#!/bin/bash
+
+# Script para iniciar Chromium com opções de estabilidade
+# Este script será chamado pelo kiosk.sh
+# CORREÇÃO: Execução sem sudo e com prevenção de login
+
+LOG_FILE="/var/log/kiosk_monitor.log"
+CHROMIUM_USER_DATA="/home/$(logname)/.config/chromium-kiosk"
+KIOSK_URL="$1"
+
+# Configurar ambiente (NUNCA usar sudo aqui!)
+export DISPLAY=:0
+export XAUTHORITY="$HOME/.Xauthority"
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+
+# Função de log local
+log_chromium() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [Chromium] $1" >> "$LOG_FILE"
+}
+
+log_chromium "Iniciando Chromium via script externo"
+
+# Verificar se o diretório de perfil existe e tem permissões corretas
+if [ ! -d "$CHROMIUM_USER_DATA" ]; then
+    mkdir -p "$CHROMIUM_USER_DATA"
+    log_chromium "Diretório de perfil criado: $CHROMIUM_USER_DATA"
+fi
+
+# Pré-configurar preferências para evitar solicitações de login
+mkdir -p "$CHROMIUM_USER_DATA/Default"
+cat > "$CHROMIUM_USER_DATA/Default/Preferences" << 'PREF'
+{
+   "profile": {
+      "content_settings": {
+         "exceptions": {
+            "password_provider": {}
+         }
+      },
+      "password_manager_enabled": false,
+      "prefs": {
+         "credentials_enable_service": false
+      }
+   },
+   "sync": {
+      "suppress_start": true
+   },
+   "browser": {
+      "check_default_browser": false
+   },
+   "download": {
+      "prompt_for_download": false
+   }
+}
+PREF
+
+log_chromium "Preferências configuradas para evitar login"
+
+# Opções para estabilidade máxima e prevenção de login
+flatpak run org.chromium.Chromium \
+    --user-data-dir="$CHROMIUM_USER_DATA" \
+    --kiosk \
+    --no-first-run \
+    --no-default-browser-check \
+    --disable-sync \
+    --disable-signin \
+    --disable-signin-promo \
+    --disable-password-generation \
+    --disable-password-leak-detection \
+    --disable-single-click-autofill \
+    --disable-autofill-keyboard-accessory-view \
+    --disable-account-consistency \
+    --disable-gaia-services \
+    --disable-web-resources \
+    --disable-client-side-phishing-detection \
+    --disable-component-update \
+    --disable-background-networking \
+    --disable-default-apps \
+    --disable-sync-preferences \
+    --disable-bundled-integrations \
+    --disable-background-timer-throttling \
+    --disable-backgrounding-occluded-windows \
+    --disable-renderer-backgrounding \
+    --disable-back-forward-cache \
+    --disable-breakpad \
+    --disable-crash-reporter \
+    --disable-crashpad \
+    --disable-metrics \
+    --disable-metrics-reporting \
+    --disable-speech-api \
+    --disable-translate \
+    --disable-notifications \
+    --disable-geolocation \
+    --disable-webusb \
+    --disable-session-crashed-bubble \
+    --noerrdialogs \
+    --disable-infobars \
+    --disable-pinch \
+    --overscroll-history-navigation=0 \
+    --disable-features=TranslateUI,ChromeWhatsNewUI,InterestFeedContentSuggestions,MediaRemoting,PasswordImport,PasswordExport,PasswordEditing,PasswordCheck,PasswordManager,PasswordManagerOnboarding,PasswordLeakDetection,PasswordGeneration,PasswordSave,PasswordManualFallback,PasswordScriptsInjector,PasswordStrengthIndicator,PasswordImportExport \
+    --autoplay-policy=no-user-gesture-required \
+    --disable-gpu \
+    --disable-gpu-compositing \
+    --disable-accelerated-2d-canvas \
+    --disable-accelerated-video-decode \
+    --disable-accelerated-mjpeg-decode \
+    --disable-webgl \
+    --disable-software-rasterizer \
+    --disable-dev-shm-usage \
+    --no-sandbox \
+    --disable-setuid-sandbox \
+    --use-gl=swiftshader \
+    --enable-features=OverlayScrollbar,OverlayScrollbarFlashAfterAnyScrollUpdate,OverlayScrollbarFlashWhenMouseEnter \
+    --app="$KIOSK_URL" >> "$LOG_FILE" 2>&1 &
+
+CHROMIUM_PID=$!
+log_chromium "Chromium iniciado com PID: $CHROMIUM_PID"
+
+# Aguardar um pouco e verificar
+sleep 3
+if kill -0 $CHROMIUM_PID 2>/dev/null; then
+    log_chromium "Chromium está rodando estável"
+    exit 0
+else
+    log_chromium "ERRO: Chromium morreu rapidamente"
+    exit 1
+fi
+EOF
+
+chmod +x "$INSTALL_DIR/run_chromium.sh"
+
+# ============================================
+#          SCRIPT PRINCIPAL DO KIOSK
+# ============================================
+
+echo -e "${GREEN}[4/8] Criando script do kiosk com monitor inteligente...${NC}"
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$SCREENSHOT_DIR"
 sudo chmod 755 "$SCREENSHOT_DIR"
@@ -249,14 +386,14 @@ capture_diagnostic_screenshot() {
     fi
 }
 
-# Verificação de saúde do Chromium (NÃO gera screenshot automaticamente)
+# Verificação de saúde do Chromium
 check_chromium_health() {
     local pid
     local window_count
     local idle_time
     
     # Verificar processo - procurando por flatpak run chromium
-    pid=$(pgrep -f "flatpak run.*chromium.*$KIOSK_URL" | head -1)
+    pid=$(pgrep -f "flatpak run.*chromium" | head -1)
     if [[ -z "$pid" ]]; then
         log "ERRO: Processo Chromium não encontrado"
         return 1
@@ -276,7 +413,7 @@ check_chromium_health() {
         return 1
     fi
     
-    # Verificar se a janela está congelada (não responde a eventos)
+    # Verificar se a janela está congelada
     if ! xdotool search --onlyvisible --class "chromium" windowfocus 2>/dev/null; then
         log "ERRO: Janela Chromium não aceita foco"
         return 1
@@ -294,34 +431,20 @@ check_chromium_health() {
 # Verificação de conectividade da URL
 check_url_health() {
     local http_code
-    local start_time
-    local end_time
     local response_time
     
-    start_time=$(date +%s%N)
     http_code=$(curl -o /dev/null -s -w "%{http_code}" --max-time 15 --connect-timeout 10 "$KIOSK_URL")
-    end_time=$(date +%s%N)
-    
-    response_time=$(( (end_time - start_time) / 1000000 ))
     
     if [[ "$http_code" == "200" ]]; then
-        log "URL OK (${response_time}ms)"
+        log "URL OK (HTTP $http_code)"
         return 0
     else
-        log "ERRO: URL retornou HTTP $http_code (${response_time}ms)"
+        log "ERRO: URL retornou HTTP $http_code"
         return 1
     fi
 }
 
-# Função para verificar se o PWA tem conteúdo em cache
-check_cached_content() {
-    if DISPLAY=:0 xdotool search --onlyvisible --class "chromium" key --clearmodifiers "Ctrl+l" 2>/dev/null; then
-        return 0
-    fi
-    return 1
-}
-
-# Reinicialização completa do Chromium (VERSÃO CORRIGIDA E ESTABILIZADA)
+# Reinicialização completa do Chromium usando script externo
 restart_chromium() {
     log "REINICIANDO Chromium completamente..."
     
@@ -332,64 +455,24 @@ restart_chromium() {
     pkill -f "flatpak run.*chromium"
     sleep 3
     
-    # Limpa preferências corrompidas
-    if [[ -f "$CHROMIUM_USER_DATA/Default/Preferences" ]]; then
-        sed -i 's/"exited_cleanly":false/"exited_cleanly":true/' "$CHROMIUM_USER_DATA/Default/Preferences"
-        sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/' "$CHROMIUM_USER_DATA/Default/Preferences"
-    fi
+    log "Iniciando Chromium via script externo..."
     
-    # Configura ambiente X
-    export DISPLAY=:0
-    export XAUTHORITY="/home/$(logname)/.Xauthority"
-    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-    
-    # Verificar se Flatpak está acessível
-    if ! command -v flatpak &> /dev/null; then
-        log "ERRO: flatpak não encontrado"
-        return 1
-    fi
-    
-    log "Iniciando Chromium via Flatpak..."
-    
-    # Usando flatpak run com opções de estabilidade
-    flatpak run org.chromium.Chromium \
-        --user-data-dir="$CHROMIUM_USER_DATA" \
-        --kiosk \
-        --noerrdialogs \
-        --disable-infobars \
-        --disable-pinch \
-        --overscroll-history-navigation=0 \
-        --disable-features=TranslateUI \
-        --disable-session-crashed-bubble \
-        --disable-component-update \
-        --disable-background-networking \
-        --autoplay-policy=no-user-gesture-required \
-        --disable-gpu-sandbox \
-        --disable-dev-shm-usage \
-        --no-sandbox \
-        --disable-accelerated-2d-canvas \
-        --disable-accelerated-video-decode \
-        --enable-features=OverlayScrollbar,OverlayScrollbarFlashAfterAnyScrollUpdate,OverlayScrollbarFlashWhenMouseEnter \
-        --app="$KIOSK_URL" >> "$LOG_FILE" 2>&1 &
+    # Usar o script externo (NUNCA usar sudo aqui!)
+    /home/$(logname)/kiosk/run_chromium.sh "$KIOSK_URL" &
     
     CHROMIUM_PID=$!
-    log "Chromium reiniciado (PID: $CHROMIUM_PID)"
+    log "Chromium reiniciado via script externo (PID: $CHROMIUM_PID)"
     
-    # Aguardar e verificar se processo continua vivo
+    # Aguardar e verificar
     sleep 5
     if kill -0 $CHROMIUM_PID 2>/dev/null; then
         log "Chromium permanece vivo após 5 segundos"
     else
         log "ERRO: Chromium morreu logo após iniciar"
-        # Tentar capturar mais informações
-        log "Verificando se há outros processos Chromium:"
-        pgrep -f chromium | while read p; do
-            log "  Processo encontrado: $p"
-        done
     fi
 }
 
-# Refresh suave - APENAS quando necessário
+# Refresh suave
 soft_refresh() {
     local reason="$1"
     
@@ -400,11 +483,6 @@ soft_refresh() {
     
     if xdotool search --onlyvisible --class "chromium" windowactivate --sync key --clearmodifiers F5 2>/dev/null; then
         log "Refresh via F5 executado"
-        return 0
-    fi
-    
-    if xdotool search --onlyvisible --class "chromium" windowactivate --sync key --clearmodifiers "ctrl+r" 2>/dev/null; then
-        log "Refresh via Ctrl+R executado"
         return 0
     fi
     
@@ -428,7 +506,7 @@ unclutter -idle 0.5 -root &
 restart_chromium
 
 # ============================================
-#          LOOP PRINCIPAL - SEM CRON!
+#          LOOP PRINCIPAL
 # ============================================
 
 consecutive_failures=0
@@ -458,32 +536,19 @@ while true; do
         if [[ $((current_time - last_url_check)) -ge $OFFLINE_CHECK_INTERVAL ]]; then
             if check_url_health; then
                 if [[ "$was_offline" == true ]]; then
-                    log "URL voltou ao normal. Fazendo refresh para garantir."
+                    log "URL voltou ao normal."
                     soft_refresh "url_back_online"
                     was_offline=false
                 fi
                 consecutive_failures=0
             else
                 was_offline=true
-                log "URL offline - aguardando recuperação da rede"
-                
-                if check_cached_content; then
-                    log "PWA exibindo conteúdo em cache - OK"
-                else
-                    log "AVISO: PWA sem cache disponível"
-                fi
+                log "URL offline - aguardando recuperação"
             fi
             last_url_check=$current_time
         fi
         
         consecutive_failures=0
-    fi
-    
-    if [[ $((current_time % 3600)) -lt $CHECK_INTERVAL ]]; then
-        if [[ -f "$LOG_FILE" ]] && [[ $(wc -l < "$LOG_FILE") -gt 1000 ]]; then
-            tail -n 1000 "$LOG_FILE" > "${LOG_FILE}.tmp"
-            mv "${LOG_FILE}.tmp" "$LOG_FILE"
-        fi
     fi
     
     sleep $CHECK_INTERVAL
@@ -496,13 +561,12 @@ chmod +x "$INSTALL_DIR/kiosk.sh"
 #          SCRIPT DE EMERGÊNCIA 
 # ============================================
 
-echo -e "${GREEN}[4/8] Criando script de emergência...${NC}"
+echo -e "${GREEN}[5/8] Criando script de emergência...${NC}"
 cat > "$INSTALL_DIR/emergency_refresh.sh" << 'EOF'
 #!/bin/bash
 # Script de EMERGÊNCIA - executado manualmente
 
 LOG_FILE="/var/log/kiosk_emergency.log"
-USER_HOME="/home/$(logname)"
 
 log_emergency() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
@@ -511,12 +575,11 @@ log_emergency() {
 log_emergency "Script de emergência iniciado"
 
 if [[ "$1" == "--force" ]]; then
-    log_emergency "Executando refresh forçado em todas as janelas Chromium"
+    log_emergency "Executando refresh forçado"
     
     export DISPLAY=:0
-    export XAUTHORITY="$USER_HOME/.Xauthority"
+    export XAUTHORITY="$HOME/.Xauthority"
     
-    # while loop com sintaxe correta (do)
     /usr/bin/xdotool search --onlyvisible --class "chromium" | while read window; do
         log_emergency "Enviando F5 para janela: $window"
         /usr/bin/xdotool windowactivate --sync "$window" key --clearmodifiers F5
@@ -528,8 +591,6 @@ else
     echo "Uso: $0 --force"
     exit 1
 fi
-
-exit 0
 EOF
 
 chmod +x "$INSTALL_DIR/emergency_refresh.sh"
@@ -538,86 +599,52 @@ chmod +x "$INSTALL_DIR/emergency_refresh.sh"
 #          SCRIPT DE DIAGNÓSTICO
 # ============================================
 
-echo -e "${GREEN}[+] Criando script de diagnóstico...${NC}"
+echo -e "${GREEN}[6/8] Criando script de diagnóstico...${NC}"
 cat > "$INSTALL_DIR/diagnostico.sh" << 'EOF'
 #!/bin/bash
 
-echo "==================================="
+echo "========================================="
 echo "🔍 DIAGNÓSTICO DO SISTEMA KIOSK"
-echo "==================================="
+echo "========================================="
 
-# 1. Status do serviço
-echo -e "\n📌 1. Serviço kiosk:"
-if systemctl is-active --quiet kiosk.service; then
-    echo "   ✅ Ativo (running)"
-    systemctl status kiosk.service --no-pager | grep "Active:" | sed 's/^/   /'
-else
-    echo "   ❌ Parado"
-fi
+# 1. Ambiente
+echo -e "\n1. AMBIENTE:"
+echo "   DISPLAY: $DISPLAY"
+echo "   XAUTHORITY: $XAUTHORITY"
+echo "   XDG_RUNTIME_DIR: $XDG_RUNTIME_DIR"
 
-# 2. Chromium
-echo -e "\n🌐 2. Chromium:"
+# 2. Serviço
+echo -e "\n2. SERVIÇO:"
+systemctl status kiosk.service --no-pager | grep "Active:" | sed 's/^/   /'
+
+# 3. Chromium
+echo -e "\n3. CHROMIUM:"
 if pgrep -f "flatpak run.*chromium" > /dev/null; then
     PID=$(pgrep -f "flatpak run.*chromium" | head -1)
     echo "   ✅ Rodando (PID: $PID)"
-    echo "   Processos: $(pgrep -f chromium | wc -l)"
+    ps -p $PID -o %cpu,%mem,etime | sed 's/^/   /'
 else
     echo "   ❌ Não está rodando"
 fi
 
-# 3. Flatpak
-echo -e "\n📦 3. Flatpak:"
-if flatpak list | grep -q org.chromium.Chromium; then
-    echo "   ✅ Chromium Flatpak instalado"
-    flatpak info org.chromium.Chromium | grep -E "Version|Branch" | sed 's/^/   /'
-else
-    echo "   ❌ Chromium Flatpak não encontrado"
-fi
+# 4. Flatpak
+echo -e "\n4. FLATPAK:"
+flatpak list | grep chromium || echo "   Chromium não encontrado"
 
-# 4. Logs recentes
-echo -e "\n📝 4. Últimas 10 linhas do log:"
-if [ -f /var/log/kiosk_monitor.log ]; then
-    tail -10 /var/log/kiosk_monitor.log | sed 's/^/   /'
-else
-    echo "   Log não encontrado"
-fi
+# 5. Logs recentes
+echo -e "\n5. ÚLTIMOS LOGS:"
+tail -10 /var/log/kiosk_monitor.log 2>/dev/null | sed 's/^/   /' || echo "   Log não encontrado"
 
-# 5. Screenshots
-echo -e "\n📸 5. Screenshots de diagnóstico:"
-COUNT=$(ls -1 /var/log/kiosk_screenshots/*.png 2>/dev/null | wc -l)
-if [ $COUNT -gt 0 ]; then
-    echo "   $COUNT screenshot(s) disponíveis"
-    ls -lh /var/log/kiosk_screenshots/ | tail -3 | sed 's/^/   /'
-else
-    echo "   Nenhum screenshot (sistema estável)"
-fi
-
-# 6. VNC
-echo -e "\n🖥️ 6. VNC:"
-if pgrep -f vino-server > /dev/null; then
-    echo "   ✅ Ativo na porta 5900"
-    netstat -tulpn 2>/dev/null | grep 5900 | sed 's/^/   /'
-else
-    echo "   ⚠️  Não está rodando (pode iniciar no reboot)"
-fi
-
-# 7. Memória e CPU
-echo -e "\n💾 7. Recursos:"
-MEM=$(ps -o %mem,rss -p $(pgrep -f "flatpak run.*chromium" | head -1) 2>/dev/null | tail -1)
-echo "   Chromium: $MEM"
-echo "   Memória livre: $(free -h | grep Mem | awk '{print $4}')"
-echo "   Uptime: $(uptime | sed 's/.*up //' | sed 's/,.*//')"
-
-echo -e "\n==================================="
+echo -e "\n========================================="
 EOF
 
 chmod +x "$INSTALL_DIR/diagnostico.sh"
 
 # ============================================
-#          SERVIÇO SYSTEMD (KIOSK)
+#          SERVIÇO SYSTEMD
 # ============================================
 
-echo -e "${GREEN}[5/8] Criando serviço systemd para o kiosk...${NC}"
+echo -e "${GREEN}[7/8] Criando serviço systemd...${NC}"
 sudo tee /etc/systemd/system/kiosk.service > /dev/null << EOF
 [Unit]
 Description=Kiosk Mode - Monitor Inteligente
@@ -642,17 +669,10 @@ WantedBy=graphical.target
 EOF
 
 # ============================================
-#          REMOVER CRON AGRESSIVO
-# ============================================
-
-echo -e "${GREEN}[6/8] Removendo crons agressivos (se existirem)...${NC}"
-(crontab -u $(logname) -l 2>/dev/null | grep -v "xdotool\|F5\|refresh" || true) | crontab -u $(logname) -
-
-# ============================================
 #          CONFIGURAÇÕES DO SISTEMA
 # ============================================
 
-echo -e "${GREEN}[7/8] Configurações de energia e tela...${NC}"
+echo -e "${GREEN}[8/8] Configurações de energia e tela...${NC}"
 gsettings set org.gnome.desktop.screensaver idle-activation-enabled false
 gsettings set org.gnome.desktop.screensaver lock-enabled false
 gsettings set org.gnome.desktop.session idle-delay 0
@@ -661,14 +681,13 @@ gsettings set org.gnome.desktop.interface enable-animations false
 gsettings set org.gnome.desktop.notifications show-banners false
 
 # ============================================
-#          CONFIGURAÇÃO VNC (SOMENTE AUTOSTART)
+#          CONFIGURAÇÃO VNC (OPCIONAL)
 # ============================================
 
 if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]] && [[ -n "$VNC_PASSWORD" ]]; then
-    echo -e "${GREEN}[8/8] Configurando VNC via autostart (SEM systemd user)...${NC}"
+    echo -e "${GREEN}[+] Configurando VNC...${NC}"
     sudo apt-get install -y vino
     
-    # Configurações do VNC
     gsettings set org.gnome.Vino prompt-enabled false
     gsettings set org.gnome.Vino require-encryption false
     gsettings set org.gnome.Vino authentication-methods "['vnc']"
@@ -676,13 +695,10 @@ if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]] && [[ -n "$VNC_PASSWORD" ]]; then
     gsettings set org.gnome.Vino notify-on-connect false
     gsettings set org.gnome.Vino icon-visibility 'never'
     
-    # Firewall
     sudo ufw allow 5900/tcp
     sudo ufw --force enable
     
-    # CRIAR AUTOSTART (MÉTODO CONFIÁVEL PARA CINNAMON)
     mkdir -p /home/$(logname)/.config/autostart
-    
     cat > /home/$(logname)/.config/autostart/vino-server.desktop << EOF
 [Desktop Entry]
 Type=Application
@@ -691,141 +707,53 @@ Exec=/usr/lib/vino/vino-server
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
-X-GNOME-Autostart-Phase=Applications
 X-Cinnamon-Autostart-Phase=Applications
-OnlyShowIn=Cinnamon;
 EOF
     
     chmod +x /home/$(logname)/.config/autostart/vino-server.desktop
-    chown $(logname):$(logname) /home/$(logname)/.config/autostart/vino-server.desktop
     
-    # Iniciar VNC agora (para não precisar reiniciar para testar)
-    echo -e "${YELLOW}Iniciando VNC agora para teste...${NC}"
     export DISPLAY=:0
-    export XAUTHORITY=/home/$(logname)/.Xauthority
     /usr/lib/vino/vino-server &
-    sleep 2
-    
-    echo -e "${GREEN}✓ VNC configurado via autostart (iniciará automaticamente no próximo login)${NC}"
-    
-    # Script de verificação simples
-    cat > "$INSTALL_DIR/check_vnc.sh" << 'EOFVNC'
-#!/bin/bash
-echo "=== VERIFICAÇÃO VNC ==="
-echo "Processo: $(pgrep -f vino-server || echo 'NÃO RODANDO')"
-echo "Porta 5900: $(netstat -tulpn 2>/dev/null | grep 5900 || echo 'FECHADA')"
-echo ""
-echo "Para iniciar manualmente:"
-echo "export DISPLAY=:0"
-echo "export XAUTHORITY=/home/$(logname)/.Xauthority"
-echo "/usr/lib/vino/vino-server &"
-EOFVNC
-    
-    chmod +x "$INSTALL_DIR/check_vnc.sh"
-    echo -e "${GREEN}Script de verificação: $INSTALL_DIR/check_vnc.sh${NC}"
+    echo -e "${GREEN}✓ VNC configurado na porta 5900${NC}"
 fi
 
 # ============================================
-#          INSTALAÇÃO DO CHROMIUM (VIA FLATPAK)
+#          INSTALAÇÃO DO CHROMIUM
 # ============================================
 
 echo -e "${GREEN}[+] Instalando Chromium via Flatpak...${NC}"
-
-# Instalar Chromium do Flathub
 flatpak install -y flathub org.chromium.Chromium
 
-# Criar wrapper para comando 'chromium' (para compatibilidade)
-sudo tee /usr/local/bin/chromium > /dev/null << 'FLATPAK'
-#!/bin/bash
-flatpak run org.chromium.Chromium "$@"
-FLATPAK
-sudo chmod +x /usr/local/bin/chromium
+# Conceder permissões
+flatpak override --user --socket=x11 --share=network --share=ipc --device=dri org.chromium.Chromium
 
 # Verificar instalação
 if flatpak list | grep -q org.chromium.Chromium; then
-    echo -e "${GREEN}✓ Chromium instalado via Flatpak${NC}"
-    
-    # Garantir permissões para o diretório de dados
+    echo -e "${GREEN}✓ Chromium instalado com sucesso${NC}"
     mkdir -p "$CHROMIUM_USER_DATA"
     chown -R $(logname):$(logname) "$CHROMIUM_USER_DATA"
 else
-    echo -e "${RED}ERRO: Falha na instalação do Chromium via Flatpak${NC}"
-    echo -e "${YELLOW}Instale manualmente depois: flatpak install flathub org.chromium.Chromium${NC}"
+    echo -e "${RED}ERRO: Falha na instalação do Chromium${NC}"
 fi
 
 # ============================================
-#          CONFIGURAÇÕES ADICIONAIS (CORRIGIDAS)
+#          CORREÇÃO DE PERMISSÕES
 # ============================================
 
-echo -e "${GREEN}[+] Aplicando configurações adicionais para Cinnamon...${NC}"
-
-# Desabilitar notificações do Cinnamon (caminho correto)
-if gsettings list-schemas | grep -q "org.cinnamon.desktop.notifications"; then
-    gsettings set org.cinnamon.desktop.notifications display-notifications false 2>/dev/null && \
-        echo -e "  ✓ Notificações desabilitadas" || \
-        echo -e "  ${YELLOW}⚠ Não foi possível desabilitar notificações${NC}"
-else
-    echo -e "  ${YELLOW}⚠ Schema de notificações não encontrado${NC}"
-fi
-
-# Desabilitar efeitos do Cinnamon
-if gsettings list-schemas | grep -q "org.cinnamon"; then
-    gsettings set org.cinnamon desktop-effects false 2>/dev/null && \
-        echo -e "  ✓ Efeitos desabilitados" || \
-        echo -e "  ${YELLOW}⚠ Não foi possível desabilitar efeitos${NC}"
-fi
-
-# Desabilitar animações da interface (sempre funciona)
-gsettings set org.gnome.desktop.interface enable-animations false 2>/dev/null && \
-    echo -e "  ✓ Animações desabilitadas" || \
-    echo -e "  ${YELLOW}⚠ Animações já estavam desabilitadas${NC}"
-
-# Garantir que protetor de tela continue desabilitado
-gsettings set org.gnome.desktop.screensaver idle-activation-enabled false 2>/dev/null
-gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null
-
-echo -e "${GREEN}✓ Configurações adicionais concluídas${NC}"
-
-# ============================================
-#          CORREÇÃO DE PERMISSÕES DE LOG
-# ============================================
-
-echo -e "${GREEN}[+] Corrigindo permissões dos arquivos de log...${NC}"
-
-# Criar arquivos de log se não existirem
+echo -e "${GREEN}[+] Ajustando permissões...${NC}"
 sudo touch /var/log/kiosk_monitor.log
 sudo touch /var/log/kiosk_emergency.log
-
-# Ajustar proprietário para o usuário atual
 sudo chown $(logname):$(logname) /var/log/kiosk_monitor.log
 sudo chown $(logname):$(logname) /var/log/kiosk_emergency.log
-
-# Ajustar permissões (leitura/escrita para o usuário, leitura para outros)
 sudo chmod 644 /var/log/kiosk_monitor.log
 sudo chmod 644 /var/log/kiosk_emergency.log
 
-# Garantir que o diretório de screenshots tenha permissões corretas
 sudo mkdir -p /var/log/kiosk_screenshots
 sudo chown -R $(logname):$(logname) /var/log/kiosk_screenshots
 sudo chmod 755 /var/log/kiosk_screenshots
 
-# Verificar permissões
-ls -la /var/log/kiosk_monitor.log
-echo -e "${GREEN}✓ Permissões de log ajustadas${NC}"
-
 # ============================================
-#          TESTE RÁPIDO DO CHROMIUM
-# ============================================
-
-echo -e "${GREEN}[+] Testando Chromium (execução rápida)...${NC}"
-if sudo -u $(logname) DISPLAY=:0 flatpak run --command=echo org.chromium.Chromium "Chromium OK" 2>/dev/null; then
-    echo -e "${GREEN}✓ Chromium respondeu ao teste${NC}"
-else
-    echo -e "${YELLOW}⚠ Teste básico falhou, mas pode funcionar após reboot${NC}"
-fi
-
-# ============================================
-#          INICIAR SERVIÇO DO KIOSK
+#          INICIAR SERVIÇO
 # ============================================
 
 echo -e "${GREEN}[+] Iniciando serviço do kiosk...${NC}"
@@ -842,39 +770,22 @@ echo -e "${GREEN}  INSTALAÇÃO COMPLETA!                  ${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo -e "URL: $KIOSK_URL"
 echo ""
-echo -e "${YELLOW}ACESSO REMOTO GARANTIDO:${NC}"
+echo -e "${YELLOW}ACESSO REMOTO:${NC}"
 echo -e "  • SSH: ssh $(logname)@$(hostname -I | awk '{print $1}')"
-echo -e "  • SSH já está rodando - você pode acessar remotamente agora!"
 echo ""
 
 if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]]; then
     echo -e "${YELLOW}VNC:${NC}"
     echo -e "  • Porta: 5900"
     echo -e "  • Status: $(pgrep -f vino-server > /dev/null && echo 'RODANDO' || echo 'AGUARDANDO REBOOT')"
-    echo -e "  • Verificar: $INSTALL_DIR/check_vnc.sh"
     echo ""
 fi
 
-echo -e "${YELLOW}SCRIPTS DISPONÍVEIS:${NC}"
-echo -e "  • Diagnóstico completo: $INSTALL_DIR/diagnostico.sh"
-echo -e "  • Refresh manual: $INSTALL_DIR/emergency_refresh.sh --force"
-echo -e "  • Verificar VNC: $INSTALL_DIR/check_vnc.sh"
-echo ""
-
-echo -e "${YELLOW}COMANDOS ÚTEIS:${NC}"
-echo -e "  • Status: sudo systemctl status kiosk.service"
-echo -e "  • Logs: sudo journalctl -u kiosk.service -f"
-echo -e "  • Monitor: sudo tail -f /var/log/kiosk_monitor.log"
+echo -e "${YELLOW}SCRIPTS:${NC}"
 echo -e "  • Diagnóstico: $INSTALL_DIR/diagnostico.sh"
-echo ""
-
-echo -e "${YELLOW}CHROMIUM:${NC}"
-echo -e "  • Instalado via Flatpak (sem dependência do snapd)"
-echo -e "  • Dados do perfil: $CHROMIUM_USER_DATA"
-echo -e "  • Opções de estabilidade adicionadas"
+echo -e "  • Refresh manual: $INSTALL_DIR/emergency_refresh.sh --force"
 echo ""
 
 echo -e "${YELLOW}REINICIANDO EM 10 SEGUNDOS...${NC}"
-echo -e "${YELLOW}(pressione Ctrl+C para cancelar o reboot)${NC}"
 sleep 10
 sudo reboot
