@@ -3,7 +3,10 @@
 # Script de Configuração do Kiosk para Linux Mint
 # Versão unificada com suporte a PWA e detecção inteligente de travamentos
 # Otimizado para Linux Mint 22 Cinnamon
-# CORREÇÃO: SSH instalado primeiro, VNC sem systemd user
+# CORREÇÕES: 
+#   - SSH instalado primeiro
+#   - VNC sem systemd user (só autostart)
+#   - Chromium via Flatpak (evita dependência do snapd)
 # Autor: Baseado em scripts validados para Raspberry Pi e Linux Mint
 
 set -e  # Sai imediatamente se algum comando falhar
@@ -175,7 +178,11 @@ sudo apt-get install -y \
     imagemagick \
     gnome-screenshot \
     bc \
-    net-tools
+    net-tools \
+    flatpak  # Necessário para Chromium via Flatpak
+
+# Adicionar repositório Flathub
+flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 
 # ============================================
 #          SCRIPT PRINCIPAL DO KIOSK
@@ -244,8 +251,8 @@ check_chromium_health() {
     local window_count
     local idle_time
     
-    # Verificar processo
-    pid=$(pgrep -f "chromium.*$KIOSK_URL" | head -1)
+    # Verificar processo - agora procurando por flatpak run chromium
+    pid=$(pgrep -f "flatpak run.*chromium.*$KIOSK_URL" | head -1)
     if [[ -z "$pid" ]]; then
         log "ERRO: Processo Chromium não encontrado"
         return 1
@@ -325,7 +332,8 @@ restart_chromium() {
     fi
     
     export DISPLAY=:0
-    chromium \
+    # Usando flatpak run para iniciar o Chromium
+    flatpak run org.chromium.Chromium \
         --user-data-dir="$CHROMIUM_USER_DATA" \
         --kiosk \
         --noerrdialogs \
@@ -471,7 +479,7 @@ if [[ "$1" == "--force" ]]; then
     export DISPLAY=:0
     export XAUTHORITY="$USER_HOME/.Xauthority"
     
-    # CORREÇÃO: while loop com sintaxe correta (do)
+    # while loop com sintaxe correta (do)
     /usr/bin/xdotool search --onlyvisible --class "chromium" | while read window; do
         log_emergency "Enviando F5 para janela: $window"
         /usr/bin/xdotool windowactivate --sync "$window" key --clearmodifiers F5
@@ -601,17 +609,31 @@ EOFVNC
 fi
 
 # ============================================
-#          INSTALAÇÃO DO CHROMIUM
+#          INSTALAÇÃO DO CHROMIUM (VIA FLATPAK)
 # ============================================
 
-echo -e "${GREEN}[+] Instalando Chromium...${NC}"
-if ! command -v chromium &> /dev/null; then
-    sudo apt-get install -y chromium-browser || {
-        wget -O /tmp/chromium.deb http://packages.linuxmint.com/pool/upstream/c/chromium/chromium_latest_amd64.deb
-        sudo dpkg -i /tmp/chromium.deb || true
-        sudo apt-get install -f -y
-        rm /tmp/chromium.deb
-    }
+echo -e "${GREEN}[+] Instalando Chromium via Flatpak...${NC}"
+
+# Instalar Chromium do Flathub
+flatpak install -y flathub org.chromium.Chromium
+
+# Criar wrapper para comando 'chromium' (para compatibilidade)
+sudo tee /usr/local/bin/chromium > /dev/null << 'FLATPAK'
+#!/bin/bash
+flatpak run org.chromium.Chromium "$@"
+FLATPAK
+sudo chmod +x /usr/local/bin/chromium
+
+# Verificar instalação
+if flatpak list | grep -q org.chromium.Chromium; then
+    echo -e "${GREEN}✓ Chromium instalado via Flatpak${NC}"
+    
+    # Garantir permissões para o diretório de dados
+    mkdir -p "$CHROMIUM_USER_DATA"
+    chown -R $(logname):$(logname) "$CHROMIUM_USER_DATA"
+else
+    echo -e "${RED}ERRO: Falha na instalação do Chromium via Flatpak${NC}"
+    echo -e "${YELLOW}Instale manualmente depois: flatpak install flathub org.chromium.Chromium${NC}"
 fi
 
 # ============================================
@@ -642,7 +664,7 @@ echo -e "URL: $KIOSK_URL"
 echo ""
 echo -e "${YELLOW}ACESSO REMOTO GARANTIDO:${NC}"
 echo -e "  • SSH: ssh $(logname)@$(hostname -I | awk '{print $1}')"
-echo -e "  • SSH já está rodando - você pode continuar a instalação remotamente!"
+echo -e "  • SSH já está rodando - você pode acessar remotamente agora!"
 echo ""
 
 if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]]; then
@@ -662,6 +684,11 @@ echo -e "${YELLOW}COMANDOS ÚTEIS:${NC}"
 echo -e "  • Status: sudo systemctl status kiosk.service"
 echo -e "  • Logs: sudo journalctl -u kiosk.service -f"
 echo -e "  • Monitor: sudo tail -f /var/log/kiosk_monitor.log"
+echo ""
+
+echo -e "${YELLOW}CHROMIUM:${NC}"
+echo -e "  • Instalado via Flatpak (sem dependência do snapd)"
+echo -e "  • Dados do perfil: $CHROMIUM_USER_DATA"
 echo ""
 
 echo -e "${YELLOW}REINICIANDO EM 10 SEGUNDOS...${NC}"
