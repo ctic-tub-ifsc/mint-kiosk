@@ -12,7 +12,7 @@
 #   - Script de execução com variáveis de ambiente explícitas
 #   - Monitoramento avançado de processos
 #   - Login automático configurado
-#   - Bloqueio de tela desabilitado
+#   - Bloqueio de tela desabilitado (com correção para dconf)
 #   - Suspensão/hibernação desabilitada
 #   - Relatório detalhado ao final
 # Autor: Baseado em scripts validados para Raspberry Pi e Linux Mint
@@ -192,6 +192,9 @@ flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flat
 
 echo -e "${GREEN}[3/8] Configurando login automático...${NC}"
 
+# Criar diretório de configuração do LightDM se não existir
+sudo mkdir -p /etc/lightdm/lightdm.conf.d
+
 # Configurar LightDM para login automático
 sudo tee /etc/lightdm/lightdm.conf.d/50-kiosk.conf > /dev/null << EOF
 [Seat:*]
@@ -206,22 +209,13 @@ sudo chmod 644 /etc/lightdm/lightdm.conf.d/50-kiosk.conf
 echo -e "${GREEN}✓ Login automático configurado para usuário $USERNAME${NC}"
 
 # ============================================
-#          DESABILITAR BLOQUEIO DE TELA
+#          DESABILITAR BLOQUEIO DE TELA (SISTEMA)
 # ============================================
 
-echo -e "${GREEN}[4/8] Desabilitando bloqueio de tela e suspensão...${NC}"
+echo -e "${GREEN}[4/8] Desabilitando bloqueio de tela e suspensão (configurações de sistema)...${NC}"
 
-# Configurações do usuário
-sudo -u $USERNAME gsettings set org.gnome.desktop.screensaver idle-activation-enabled false
-sudo -u $USERNAME gsettings set org.gnome.desktop.screensaver lock-enabled false
-sudo -u $USERNAME gsettings set org.gnome.desktop.screensaver lock-delay 0
-sudo -u $USERNAME gsettings set org.gnome.desktop.session idle-delay 0
-sudo -u $USERNAME gsettings set org.cinnamon.desktop.lockdown disable-lock-screen true
-sudo -u $USERNAME gsettings set org.cinnamon.desktop.screensaver lock-enabled false
-sudo -u $USERNAME gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'
-sudo -u $USERNAME gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 'nothing'
-sudo -u $USERNAME gsettings set org.gnome.settings-daemon.plugins.power idle-dim false
-sudo -u $USERNAME gsettings set org.gnome.desktop.interface enable-animations false
+# Criar diretório para configurações do systemd
+sudo mkdir -p /etc/systemd/logind.conf.d
 
 # Configurações do sistema para energia
 sudo tee /etc/systemd/logind.conf.d/50-kiosk.conf > /dev/null << EOF
@@ -235,13 +229,88 @@ EOF
 # Desabilitar suspensão automática
 sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
 
-echo -e "${GREEN}✓ Bloqueio de tela e suspensão desabilitados${NC}"
+echo -e "${GREEN}✓ Configurações de energia do sistema aplicadas${NC}"
+
+# ============================================
+#          SCRIPT DE CONFIGURAÇÃO PÓS-REBOOT
+# ============================================
+
+echo -e "${GREEN}[5/8] Criando script de configuração pós-reboot...${NC}"
+
+cat > "$INSTALL_DIR/pos_reboot.sh" << EOF
+#!/bin/bash
+
+# Script executado após o primeiro reboot
+# Configura as preferências do usuário que dependem do ambiente gráfico
+
+LOG_FILE="$INSTALL_DIR/pos_reboot.log"
+USERNAME="$USERNAME"
+
+echo "\$(date) - Iniciando configurações pós-reboot" > \$LOG_FILE
+
+# Aguardar o ambiente gráfico ficar pronto
+sleep 10
+
+# Configurar via gsettings (agora com DISPLAY disponível)
+export DISPLAY=:0
+export XAUTHORITY=/home/\$USERNAME/.Xauthority
+export XDG_RUNTIME_DIR=/run/user/\$(id -u \$USERNAME)
+
+echo "\$(date) - Aplicando configurações do usuário..." >> \$LOG_FILE
+
+# Desabilitar protetor de tela e bloqueio
+gsettings set org.gnome.desktop.screensaver idle-activation-enabled false 2>/dev/null
+gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null
+gsettings set org.gnome.desktop.screensaver lock-delay 0 2>/dev/null
+gsettings set org.gnome.desktop.session idle-delay 0 2>/dev/null
+gsettings set org.cinnamon.desktop.lockdown disable-lock-screen true 2>/dev/null
+gsettings set org.cinnamon.desktop.screensaver lock-enabled false 2>/dev/null
+
+# Desabilitar suspensão
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing' 2>/dev/null
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 'nothing' 2>/dev/null
+gsettings set org.gnome.settings-daemon.plugins.power idle-dim false 2>/dev/null
+
+# Desabilitar animações
+gsettings set org.gnome.desktop.interface enable-animations false 2>/dev/null
+
+echo "\$(date) - Configurações do usuário aplicadas" >> \$LOG_FILE
+
+# Criar arquivo de flag para indicar que já foi executado
+touch /home/\$USERNAME/.kiosk_configured
+
+exit 0
+EOF
+
+chmod +x "$INSTALL_DIR/pos_reboot.sh"
+
+# ============================================
+#          CRIAR ENTRADA DE AUTOSTART
+# ============================================
+
+echo -e "${GREEN}[6/8] Criando entrada de autostart para configuração pós-reboot...${NC}"
+
+mkdir -p "$USER_HOME/.config/autostart"
+
+cat > "$USER_HOME/.config/autostart/kiosk-pos-reboot.desktop" << EOF
+[Desktop Entry]
+Type=Application
+Name=Kiosk Pós-Reboot
+Exec=$INSTALL_DIR/pos_reboot.sh
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Phase=Applications
+EOF
+
+chown $USERNAME:$USERNAME "$USER_HOME/.config/autostart/kiosk-pos-reboot.desktop"
+chmod +x "$USER_HOME/.config/autostart/kiosk-pos-reboot.desktop"
 
 # ============================================
 #          SCRIPT DE EXECUÇÃO DO CHROMIUM
 # ============================================
 
-echo -e "${GREEN}[5/8] Criando script de execução do Chromium...${NC}"
+echo -e "${GREEN}[7/8] Criando script de execução do Chromium...${NC}"
 mkdir -p "$INSTALL_DIR"
 
 cat > "$INSTALL_DIR/run_chromium.sh" << 'EOF'
@@ -375,7 +444,7 @@ chmod +x "$INSTALL_DIR/run_chromium.sh"
 #          SCRIPT DO KIOSK (MONITOR)
 # ============================================
 
-echo -e "${GREEN}[6/8] Criando script do monitor...${NC}"
+echo -e "${GREEN}[8/8] Criando script do monitor...${NC}"
 
 cat > "$INSTALL_DIR/kiosk.sh" << 'EOF'
 #!/bin/bash
@@ -528,7 +597,7 @@ chmod +x "$INSTALL_DIR/kiosk.sh"
 #          SCRIPT DE EMERGÊNCIA
 # ============================================
 
-echo -e "${GREEN}[7/8] Criando script de emergência...${NC}"
+echo -e "${GREEN}[+] Criando script de emergência...${NC}"
 
 cat > "$INSTALL_DIR/emergency.sh" << 'EOF'
 #!/bin/bash
@@ -573,7 +642,7 @@ chmod +x "$INSTALL_DIR/emergency.sh"
 #          SCRIPT DE DIAGNÓSTICO
 # ============================================
 
-echo -e "${GREEN}[8/8] Criando script de diagnóstico...${NC}"
+echo -e "${GREEN}[+] Criando script de diagnóstico...${NC}"
 
 cat > "$INSTALL_DIR/diagnostico.sh" << 'EOF'
 #!/bin/bash
@@ -696,27 +765,36 @@ if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]] && [[ -n "$VNC_PASSWORD" ]]; then
     echo -e "${GREEN}[+] Configurando VNC...${NC}"
     sudo apt-get install -y vino
     
-    sudo -u $USERNAME gsettings set org.gnome.Vino prompt-enabled false
-    sudo -u $USERNAME gsettings set org.gnome.Vino require-encryption false
-    sudo -u $USERNAME gsettings set org.gnome.Vino authentication-methods "['vnc']"
-    sudo -u $USERNAME gsettings set org.gnome.Vino vnc-password "$(echo -n "$VNC_PASSWORD" | base64)"
+    # Configurações serão aplicadas no pós-reboot
+    mkdir -p "$INSTALL_DIR/vnc-config"
     
-    sudo ufw allow 5900/tcp
+    cat > "$INSTALL_DIR/vnc-config/setup.sh" << EOF
+#!/bin/bash
+export DISPLAY=:0
+export XAUTHORITY=/home/$USERNAME/.Xauthority
+sleep 10
+gsettings set org.gnome.Vino prompt-enabled false
+gsettings set org.gnome.Vino require-encryption false
+gsettings set org.gnome.Vino authentication-methods "['vnc']"
+gsettings set org.gnome.Vino vnc-password "$(echo -n "$VNC_PASSWORD" | base64)"
+EOF
     
-    mkdir -p "$USER_HOME/.config/autostart"
-    cat > "$USER_HOME/.config/autostart/vino-server.desktop" << EOF
+    chmod +x "$INSTALL_DIR/vnc-config/setup.sh"
+    
+    # Adicionar ao autostart
+    cat >> "$USER_HOME/.config/autostart/vino-config.desktop" << EOF
 [Desktop Entry]
 Type=Application
-Name=Vino VNC Server
-Exec=/usr/lib/vino/vino-server
+Name=VNC Config
+Exec=$INSTALL_DIR/vnc-config/setup.sh
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
 EOF
     
-    chown $USERNAME:$USERNAME "$USER_HOME/.config/autostart/vino-server.desktop"
+    sudo ufw allow 5900/tcp
     
-    echo -e "${GREEN}✓ VNC configurado na porta 5900${NC}"
+    echo -e "${GREEN}✓ VNC será configurado no primeiro login${NC}"
 fi
 
 # ============================================
@@ -760,15 +838,6 @@ sudo chown -R $USERNAME:$USERNAME /var/log/kiosk_screenshots
 sudo chmod 755 /var/log/kiosk_screenshots
 
 # ============================================
-#          INICIAR SERVIÇO
-# ============================================
-
-echo -e "${GREEN}[+] Iniciando serviço do kiosk...${NC}"
-sudo systemctl daemon-reload
-sudo systemctl enable kiosk.service
-sudo systemctl start kiosk.service
-
-# ============================================
 #          RELATÓRIO FINAL DETALHADO
 # ============================================
 
@@ -793,8 +862,7 @@ echo -e "${BLUE}🖥️  AMBIENTE GRÁFICO${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "Display Manager: LightDM"
 echo -e "Sessão: Cinnamon"
-echo -e "Resolução: $(DISPLAY=:0 xdpyinfo 2>/dev/null | grep dimensions | awk '{print $2}' || echo 'Não disponível')"
-echo -e "Login Automático: Configurado para $USERNAME"
+echo -e "Login Automático: ${GREEN}Configurado para $USERNAME${NC}"
 echo ""
 
 # Chromium
@@ -804,23 +872,14 @@ echo -e "Versão: $CHROMIUM_VERSION"
 echo -e "Modo: Kiosk / PWA"
 echo -e "URL: $KIOSK_URL"
 echo -e "Perfil: $CHROMIUM_USER_DATA"
-if pgrep -f "flatpak run.*chromium" > /dev/null; then
-    echo -e "Status: ${GREEN}✅ Rodando${NC}"
-    CHROME_PID=$(pgrep -f "flatpak run.*chromium" | head -1)
-    echo -e "PID: $CHROME_PID"
-    echo -e "Uptime: $(ps -o etime= -p $CHROME_PID | xargs)"
-else
-    echo -e "Status: ${YELLOW}⚠️  Aguardando inicialização${NC}"
-fi
 echo ""
 
 # Configurações de Energia
 echo -e "${BLUE}⚡ CONFIGURAÇÕES DE ENERGIA${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "Bloqueio de tela: ${GREEN}Desabilitado${NC}"
-echo -e "Suspensão: ${GREEN}Desabilitada${NC}"
+echo -e "Bloqueio de tela: ${GREEN}Será desabilitado no primeiro login${NC}"
+echo -e "Suspensão: ${GREEN}Desabilitada (sistema)${NC}"
 echo -e "Hibernação: ${GREEN}Desabilitada${NC}"
-echo -e "Proteção de tela: ${GREEN}Desabilitada${NC}"
 echo ""
 
 # Acesso Remoto
@@ -828,11 +887,7 @@ echo -e "${BLUE}🔌 ACESSO REMOTO${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "SSH: ${GREEN}✅ Ativo${NC} - ssh $USERNAME@$IP_ADDR"
 if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]]; then
-    if pgrep -f vino-server > /dev/null; then
-        echo -e "VNC: ${GREEN}✅ Ativo${NC} - Porta 5900"
-    else
-        echo -e "VNC: ${YELLOW}⚠️  Configurado (inicia no reboot)${NC}"
-    fi
+    echo -e "VNC: ${YELLOW}⚠️  Será configurado no primeiro login${NC}"
 else
     echo -e "VNC: ${YELLOW}⚠️  Não configurado${NC}"
 fi
@@ -848,17 +903,20 @@ echo -e "  • Log principal: tail -f /var/log/kiosk_monitor.log"
 echo -e "  • Logs do sistema: sudo journalctl -u kiosk.service -f"
 echo ""
 
-# Serviço
-echo -e "${BLUE}⚙️  STATUS DO SERVIÇO${NC}"
+# Próximos passos
+echo -e "${YELLOW}📌 PRÓXIMOS PASSOS APÓS O REBOOT:${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-if systemctl is-active --quiet kiosk.service; then
-    echo -e "kiosk.service: ${GREEN}✅ Ativo${NC}"
-    systemctl status kiosk.service --no-pager | grep "Active:" | sed 's/^/  /'
-else
-    echo -e "kiosk.service: ${RED}❌ Inativo${NC}"
-fi
+echo -e "1. O sistema reiniciará automaticamente"
+echo -e "2. O login automático será ativado"
+echo -e "3. Configurações de tela serão aplicadas"
+echo -e "4. O Chromium iniciará em modo kiosk"
+echo -e "5. O VNC será configurado (se selecionado)"
 echo ""
 
 echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║      O SISTEMA SERÁ REINICIADO EM 15 SEGUNDOS               ║${NC}"
-echo -e "${
+echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
+
+echo -e "${YELLOW}(pressione Ctrl+C para cancelar o reboot)${NC}"
+sleep 15
+sudo reboot
