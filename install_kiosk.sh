@@ -7,6 +7,7 @@
 #   - SSH instalado primeiro
 #   - VNC sem systemd user (só autostart)
 #   - Chromium via Flatpak (evita dependência do snapd)
+#   - Configurações Cinnamon corrigidas (sem erros de chave)
 # Autor: Baseado em scripts validados para Raspberry Pi e Linux Mint
 
 set -e  # Sai imediatamente se algum comando falhar
@@ -637,12 +638,37 @@ else
 fi
 
 # ============================================
-#          CONFIGURAÇÕES ADICIONAIS
+#          CONFIGURAÇÕES ADICIONAIS (CORRIGIDAS)
 # ============================================
 
-echo -e "${GREEN}[+] Aplicando configurações adicionais...${NC}"
-gsettings set org.cinnamon.desktop.notifications show-notifications false
-gsettings set org.cinnamon enable-effects false
+echo -e "${GREEN}[+] Aplicando configurações adicionais para Cinnamon...${NC}"
+
+# Desabilitar notificações do Cinnamon (caminho correto)
+if gsettings list-schemas | grep -q "org.cinnamon.desktop.notifications"; then
+    gsettings set org.cinnamon.desktop.notifications display-notifications false 2>/dev/null && \
+        echo -e "  ✓ Notificações desabilitadas" || \
+        echo -e "  ${YELLOW}⚠ Não foi possível desabilitar notificações${NC}"
+else
+    echo -e "  ${YELLOW}⚠ Schema de notificações não encontrado${NC}"
+fi
+
+# Desabilitar efeitos do Cinnamon
+if gsettings list-schemas | grep -q "org.cinnamon"; then
+    gsettings set org.cinnamon desktop-effects false 2>/dev/null && \
+        echo -e "  ✓ Efeitos desabilitados" || \
+        echo -e "  ${YELLOW}⚠ Não foi possível desabilitar efeitos${NC}"
+fi
+
+# Desabilitar animações da interface (sempre funciona)
+gsettings set org.gnome.desktop.interface enable-animations false 2>/dev/null && \
+    echo -e "  ✓ Animações desabilitadas" || \
+    echo -e "  ${YELLOW}⚠ Animações já estavam desabilitadas${NC}"
+
+# Garantir que protetor de tela continue desabilitado
+gsettings set org.gnome.desktop.screensaver idle-activation-enabled false 2>/dev/null
+gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null
+
+echo -e "${GREEN}✓ Configurações adicionais concluídas${NC}"
 
 # ============================================
 #          INICIAR SERVIÇO DO KIOSK
