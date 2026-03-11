@@ -8,6 +8,7 @@
 #   - VNC sem systemd user (só autostart)
 #   - Chromium via Flatpak (evita dependência do snapd)
 #   - Configurações Cinnamon corrigidas (sem erros de chave)
+#   - Permissões de log ajustadas (resolve "Permissão negada")
 # Autor: Baseado em scripts validados para Raspberry Pi e Linux Mint
 
 set -e  # Sai imediatamente se algum comando falhar
@@ -669,6 +670,33 @@ gsettings set org.gnome.desktop.screensaver idle-activation-enabled false 2>/dev
 gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null
 
 echo -e "${GREEN}✓ Configurações adicionais concluídas${NC}"
+
+# ============================================
+#          CORREÇÃO DE PERMISSÕES DE LOG
+# ============================================
+
+echo -e "${GREEN}[+] Corrigindo permissões dos arquivos de log...${NC}"
+
+# Criar arquivos de log se não existirem
+sudo touch /var/log/kiosk_monitor.log
+sudo touch /var/log/kiosk_emergency.log
+
+# Ajustar proprietário para o usuário atual
+sudo chown $(logname):$(logname) /var/log/kiosk_monitor.log
+sudo chown $(logname):$(logname) /var/log/kiosk_emergency.log
+
+# Ajustar permissões (leitura/escrita para o usuário, leitura para outros)
+sudo chmod 644 /var/log/kiosk_monitor.log
+sudo chmod 644 /var/log/kiosk_emergency.log
+
+# Garantir que o diretório de screenshots tenha permissões corretas
+sudo mkdir -p /var/log/kiosk_screenshots
+sudo chown -R $(logname):$(logname) /var/log/kiosk_screenshots
+sudo chmod 755 /var/log/kiosk_screenshots
+
+# Verificar permissões
+ls -la /var/log/kiosk_monitor.log
+echo -e "${GREEN}✓ Permissões de log ajustadas${NC}"
 
 # ============================================
 #          INICIAR SERVIÇO DO KIOSK
