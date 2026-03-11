@@ -13,7 +13,7 @@ Este script transforma o Linux Mint em um quiosque digital inteligente, ideal pa
 ## Instalação em Comando Único
 
 ```bash
-bash -c "$(wget -qO- https://raw.githubusercontent.com/ctic-tub-ifsc/mint-kiosk/refs/heads/main/install_kiosk.sh)"
+sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/ctic-tub-ifsc/mint-kiosk/refs/heads/main/install_kiosk.sh)"
 ```
 
 > **Nota:** Durante a instalação, você precisará informar:
