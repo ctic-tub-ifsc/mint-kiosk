@@ -12,7 +12,7 @@
 #   - Login automático configurado
 #   - Bloqueio de tela desabilitado (pós-reboot)
 #   - Suspensão/hibernação desabilitada
-#   - Relatório detalhado ao final
+#   - Relatório detalhado ao final (CORRIGIDO)
 # Autor: Baseado em scripts validados para Raspberry Pi e Linux Mint
 
 set -e  # Sai imediatamente se algum comando falhar
@@ -212,7 +212,7 @@ echo -e "${GREEN}✓ Login automático configurado para usuário $USERNAME${NC}"
 
 echo -e "${GREEN}[4/8] Desabilitando suspensão do sistema...${NC}"
 
-# Criar diretório para configurações do systemd (CORRIGIDO)
+# Criar diretório para configurações do systemd
 sudo mkdir -p /etc/systemd/logind.conf.d
 
 # Configurações do sistema para energia
@@ -634,7 +634,7 @@ case "$1" in
         pkill -f chromium
         sleep 2
         export DISPLAY=:0
-        /home/$(whoami)/kiosk/run_chromium.sh "$KIOSK_URL"
+        /home/$(whoami)/kiosk/run_chromium.sh "https://mural.tubarao.ifsc.edu.br/?bloco=b"
         ;;
     refresh)
         echo "Forçando refresh F5..."
@@ -887,7 +887,7 @@ echo -e "${GREEN}[+] Serviço do kiosk será iniciado após o reboot${NC}"
 sudo systemctl enable kiosk.service
 
 # ============================================
-#          RELATÓRIO FINAL DETALHADO
+#          RELATÓRIO FINAL DETALHADO (CORRIGIDO)
 # ============================================
 
 clear
@@ -907,4 +907,65 @@ echo -e "Usuário: $USERNAME"
 echo ""
 
 # Ambiente Gráfico
-echo -e "${BLUE}🖥️ 
+echo -e "${BLUE}🖥️  AMBIENTE GRÁFICO${NC}"
+echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "Display Manager: LightDM"
+echo -e "Sessão: Cinnamon"
+echo -e "Login Automático: ${GREEN}Configurado para $USERNAME${NC}"
+echo ""
+
+# Chromium
+echo -e "${BLUE}🌐 CHROMIUM${NC}"
+echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "Versão: $CHROMIUM_VERSION"
+echo -e "Modo: Kiosk / PWA"
+echo -e "URL: $KIOSK_URL"
+echo -e "Perfil: $CHROMIUM_USER_DATA"
+echo ""
+
+# Configurações de Energia
+echo -e "${BLUE}⚡ CONFIGURAÇÕES DE ENERGIA${NC}"
+echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "Bloqueio de tela: ${GREEN}Será desabilitado no primeiro login${NC}"
+echo -e "Suspensão: ${GREEN}Desabilitada (sistema)${NC}"
+echo -e "Hibernação: ${GREEN}Desabilitada${NC}"
+echo ""
+
+# Acesso Remoto
+echo -e "${BLUE}🔌 ACESSO REMOTO${NC}"
+echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "SSH: ${GREEN}✅ Ativo${NC} - ssh $USERNAME@$IP_ADDR"
+if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]]; then
+    echo -e "VNC: ${YELLOW}⚠️  Será configurado no primeiro login${NC}"
+else
+    echo -e "VNC: ${YELLOW}⚠️  Não configurado${NC}"
+fi
+echo ""
+
+# Logs e Diagnóstico
+echo -e "${BLUE}📊 FERRAMENTAS DE DIAGNÓSTICO${NC}"
+echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "Scripts disponíveis em: $INSTALL_DIR"
+echo -e "  • Diagnóstico: ./diagnostico.sh"
+echo -e "  • Emergência: ./emergency.sh {restart|refresh|status|logs}"
+echo -e "  • Log principal: tail -f /var/log/kiosk_monitor.log"
+echo -e "  • Logs do sistema: sudo journalctl -u kiosk.service -f"
+echo ""
+
+# Próximos passos
+echo -e "${YELLOW}📌 PRÓXIMOS PASSOS APÓS O REBOOT:${NC}"
+echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "1. O sistema reiniciará automaticamente"
+echo -e "2. O login automático será ativado"
+echo -e "3. Configurações de tela serão aplicadas"
+echo -e "4. O Chromium iniciará em modo kiosk"
+echo -e "5. O VNC será configurado (se selecionado)"
+echo ""
+
+echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║      O SISTEMA SERÁ REINICIADO EM 15 SEGUNDOS               ║${NC}"
+echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
+
+echo -e "${YELLOW}(pressione Ctrl+C para cancelar o reboot)${NC}"
+sleep 15
+sudo reboot
