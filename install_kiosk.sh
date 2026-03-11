@@ -428,6 +428,7 @@ chmod +x "$INSTALL_DIR/kiosk.sh"
 
 # ============================================
 #          SCRIPT DE EMERGÊNCIA (OPCIONAL)
+#          CORRIGIDO: while loop com sintaxe correta
 # ============================================
 
 echo -e "${GREEN}[3/8] Criando script de emergência (apenas para casos extremos)...${NC}"
@@ -435,19 +436,48 @@ cat > "$INSTALL_DIR/emergency_refresh.sh" << 'EOF'
 #!/bin/bash
 # Script de EMERGÊNCIA - executado manualmente ou em casos extremos
 # NÃO configurar no cron automático!
+# VERSÃO CORRIGIDA: while loop com sintaxe adequada
 
 LOG_FILE="/var/log/kiosk_emergency.log"
 EMERGENCY_FILE="/tmp/kiosk_emergency"
+USER_HOME="/home/$(logname)"
 
-echo "$(date) - Script de emergência executado manualmente" >> "$LOG_FILE"
+# Função de log
+log_emergency() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
 
-if [[ -f "$EMERGENCY_FILE" ]]; then
-    export DISPLAY=:0
-    xdotool search --onlyvisible --class "chromium" key F5
+log_emergency "Script de emergência iniciado"
+
+# Determina se deve executar (flag de emergência ou força manual)
+if [[ -f "$EMERGENCY_FILE" ]] || [[ "$1" == "--force" ]]; then
+    log_emergency "Executando refresh forçado em todas as janelas Chromium"
     
-    rm -f "$EMERGENCY_FILE"
-    echo "$(date) - Refresh de emergência executado" >> "$LOG_FILE"
+    export DISPLAY=:0
+    export XAUTHORITY="$USER_HOME/.Xauthority"
+    
+    # CORREÇÃO: while loop com sintaxe correta (do)
+    /usr/bin/xdotool search --onlyvisible --class "chromium" | while read window; do
+        log_emergency "Enviando F5 para janela: $window"
+        /usr/bin/xdotool windowactivate --sync "$window" key --clearmodifiers F5
+        sleep 0.5  # Pequena pausa entre janelas
+    done
+    
+    # Remove a flag se existir
+    if [[ -f "$EMERGENCY_FILE" ]]; then
+        rm -f "$EMERGENCY_FILE"
+        log_emergency "Flag de emergência removida"
+    fi
+    
+    log_emergency "Refresh de emergência concluído"
+else
+    log_emergency "Nenhuma flag de emergência encontrada. Use --force para executar manualmente."
+    echo "Para executar refresh manual: $0 --force"
+    echo "Ou crie a flag: touch $EMERGENCY_FILE"
+    exit 1
 fi
+
+exit 0
 EOF
 
 chmod +x "$INSTALL_DIR/emergency_refresh.sh"
@@ -553,6 +583,10 @@ echo -e "- Screenshots são gerados APENAS quando há falha"
 echo -e "- O PWA pode usar cache offline normalmente"
 echo -e "- Em caso de problemas, verifique os logs:"
 echo -e "  sudo tail -f $LOG_FILE"
+echo -e ""
+echo -e "${YELLOW}SCRIPT DE EMERGÊNCIA:${NC}"
+echo -e "  Para refresh manual: $INSTALL_DIR/emergency_refresh.sh --force"
+echo -e "  Logs: /var/log/kiosk_emergency.log"
 echo -e ""
 echo -e "${YELLOW}Reiniciando em 10 segundos...${NC}"
 sleep 10
