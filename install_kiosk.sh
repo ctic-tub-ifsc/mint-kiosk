@@ -12,7 +12,8 @@
 #   - Login automático configurado
 #   - Bloqueio de tela desabilitado (pós-reboot)
 #   - Suspensão/hibernação desabilitada
-#   - Duplicação automática para TV HDMI
+#   - Duplicação automática para TV HDMI (PERSISTENTE)
+#   - Serviço systemd dedicado para displays
 #   - Relatório detalhado ao final
 # Autor: Baseado em scripts validados para Raspberry Pi e Linux Mint
 
@@ -181,7 +182,7 @@ sudo apt-get install -y \
     dbus-x11 \
     lightdm \
     lightdm-settings \
-    x11-xserver-utils  # Para xrandr
+    x11-xserver-utils
 
 # Adicionar Flathub
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
@@ -271,65 +272,6 @@ fi
 echo "$(date) - X11 acessível, aplicando configurações..."
 
 # ============================================
-#          CONFIGURAÇÃO DE DUPLICAÇÃO DE TELA
-# ============================================
-
-echo "$(date) - Verificando monitores para duplicação..."
-
-# Obter lista de monitores conectados
-MONITORS=$(xrandr --current | grep " connected" | awk '{print $1}')
-MONITOR_COUNT=$(echo "$MONITORS" | wc -l)
-
-echo "$(date) - Monitores encontrados: $MONITOR_COUNT"
-xrandr --current | grep " connected" | sed 's/^/   /'
-
-# Se houver mais de um monitor, configurar duplicação
-if [ "$MONITOR_COUNT" -gt 1 ]; then
-    # Identificar monitores (priorizando HDMI como secundário)
-    PRIMARY=""
-    SECONDARY=""
-    
-    for monitor in $MONITORS; do
-        if echo "$monitor" | grep -qi "hdmi"; then
-            SECONDARY="$monitor"
-        else
-            PRIMARY="$monitor"
-        fi
-    done
-    
-    # Se não encontrou primário, usar o primeiro
-    if [ -z "$PRIMARY" ]; then
-        PRIMARY=$(echo "$MONITORS" | head -1)
-    fi
-    
-    # Se não encontrou secundário, usar o último
-    if [ -z "$SECONDARY" ]; then
-        SECONDARY=$(echo "$MONITORS" | tail -1)
-    fi
-    
-    echo "$(date) - Monitor primário: $PRIMARY"
-    echo "$(date) - Monitor secundário: $SECONDARY"
-    
-    # Obter resolução do monitor primário
-    RESOLUTION=$(xrandr | grep -A1 "^$PRIMARY connected" | tail -1 | awk '{print $1}')
-    
-    echo "$(date) - Resolução primária: $RESOLUTION"
-    
-    # Tentar configurar duplicação
-    if xrandr --output "$SECONDARY" --mode "$RESOLUTION" --same-as "$PRIMARY" 2>/dev/null; then
-        echo "$(date) - ✅ Duplicação configurada com sucesso"
-    else
-        echo "$(date) - ⚠️ Resolução não suportada, tentando modo automático..."
-        xrandr --output "$SECONDARY" --auto --same-as "$PRIMARY"
-    fi
-    
-    echo "$(date) - Configuração final:"
-    xrandr --current | grep " connected" | sed 's/^/   /'
-else
-    echo "$(date) - Apenas um monitor detectado, duplicação não necessária"
-fi
-
-# ============================================
 #          CONFIGURAÇÕES DO USUÁRIO
 # ============================================
 
@@ -392,10 +334,143 @@ chmod +x "$USER_HOME/.config/autostart/kiosk-pos-reboot.desktop"
 echo -e "${GREEN}✓ Configurações pós-reboot agendadas${NC}"
 
 # ============================================
+#          SERVIÇO DE CONFIGURAÇÃO DE DISPLAY (PERSISTENTE)
+# ============================================
+
+echo -e "${GREEN}[7/8] Criando serviço persistente para configuração de displays...${NC}"
+
+sudo tee /etc/systemd/system/display-config.service > /dev/null << EOF
+[Unit]
+Description=Configuração persistente de monitores para Kiosk
+After=graphical.target
+Requires=graphical.target
+Before=kiosk.service
+
+[Service]
+Type=oneshot
+User=$USERNAME
+Group=$USERNAME
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=$USER_HOME/.Xauthority
+Environment=XDG_RUNTIME_DIR=/run/user/$(id -u $USERNAME)
+ExecStart=/bin/bash $INSTALL_DIR/configure_display.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
+EOF
+
+# Criar script de configuração de displays (versão persistente)
+cat > "$INSTALL_DIR/configure_display.sh" << 'EOF'
+#!/bin/bash
+
+# Script de configuração persistente de monitores
+# Executado em todo boot para garantir duplicação HDMI
+
+LOG_FILE="/var/log/kiosk_display.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "$(date) - Iniciando configuração persistente de displays"
+
+# Aguardar sistema estabilizar e detectar monitores
+sleep 10
+
+export DISPLAY=:0
+export XAUTHORITY="/home/$(whoami)/.Xauthority"
+
+# Verificar se xrandr está acessível
+if ! command -v xrandr &> /dev/null; then
+    echo "ERRO: xrandr não encontrado"
+    exit 1
+fi
+
+echo "Monitores disponíveis:"
+xrandr --current | grep " connected"
+
+# Verificar se há TV HDMI conectada
+if xrandr | grep -q "HDMI.* connected"; then
+    HDMI_MONITOR=$(xrandr | grep "HDMI.* connected" | awk '{print $1}')
+    PRIMARY_MONITOR=$(xrandr | grep " connected" | grep -v "HDMI" | head -1 | awk '{print $1}')
+    
+    echo "TV HDMI detectada: $HDMI_MONITOR"
+    echo "Monitor primário: $PRIMARY_MONITOR"
+    
+    # Obter resolução do monitor primário
+    PRIMARY_RES=$(xrandr | grep -A1 "^$PRIMARY_MONITOR connected" | tail -1 | awk '{print $1}')
+    
+    echo "Configurando duplicação: $PRIMARY_MONITOR ($PRIMARY_RES) -> $HDMI_MONITOR"
+    
+    # Tentar configurar duplicação
+    if xrandr --output "$HDMI_MONITOR" --mode "$PRIMARY_RES" --same-as "$PRIMARY_MONITOR" 2>/dev/null; then
+        echo "✅ Duplicação configurada com sucesso"
+    else
+        echo "⚠️ Resolução não suportada, tentando modo automático..."
+        xrandr --output "$HDMI_MONITOR" --auto --same-as "$PRIMARY_MONITOR"
+    fi
+    
+    echo "Configuração final:"
+    xrandr --current | grep " connected"
+    
+    # Salvar configuração para referência
+    xrandr --current > "$HOME/.kiosk_last_display_config"
+else
+    echo "Nenhum monitor HDMI detectado"
+fi
+
+echo "$(date) - Configuração de displays concluída"
+exit 0
+EOF
+
+chmod +x "$INSTALL_DIR/configure_display.sh"
+chown $USERNAME:$USERNAME "$INSTALL_DIR/configure_display.sh"
+
+# Habilitar o serviço para iniciar no boot
+sudo systemctl enable display-config.service
+echo -e "${GREEN}✓ Serviço de configuração de displays criado e habilitado${NC}"
+
+# ============================================
+#          SCRIPT DE RECONFIGURAÇÃO MANUAL
+# ============================================
+
+echo -e "${GREEN}[8/8] Criando script para reconfigurar displays manualmente...${NC}"
+
+cat > "$INSTALL_DIR/reconfigurar_display.sh" << 'EOF'
+#!/bin/bash
+
+# Script para reconfigurar displays manualmente
+# Útil quando conectar uma TV após o sistema já estar rodando
+
+echo "Reconfigurando displays..."
+/home/$(whoami)/kiosk/configure_display.sh
+echo "Pronto! Verifique se a TV está espelhada."
+EOF
+
+chmod +x "$INSTALL_DIR/reconfigurar_display.sh"
+chown $USERNAME:$USERNAME "$INSTALL_DIR/reconfigurar_display.sh"
+
+# Adicionar atalho no desktop para facilitar
+mkdir -p "$USER_HOME/Desktop"
+cat > "$USER_HOME/Desktop/reconfigurar_tv.desktop" << EOF
+[Desktop Entry]
+Type=Application
+Name=Reconfigurar TV
+Comment=Aplica duplicação de tela na TV HDMI
+Exec=$INSTALL_DIR/reconfigurar_display.sh
+Icon=video-display
+Terminal=true
+Categories=System;
+EOF
+
+chown $USERNAME:$USERNAME "$USER_HOME/Desktop/reconfigurar_tv.desktop"
+chmod +x "$USER_HOME/Desktop/reconfigurar_tv.desktop"
+
+echo -e "${GREEN}✓ Scripts de reconfiguração manual criados${NC}"
+
+# ============================================
 #          SCRIPT DE EXECUÇÃO DO CHROMIUM
 # ============================================
 
-echo -e "${GREEN}[7/8] Criando script de execução do Chromium...${NC}"
+echo -e "${GREEN}[+] Criando script de execução do Chromium...${NC}"
 mkdir -p "$INSTALL_DIR"
 
 cat > "$INSTALL_DIR/run_chromium.sh" << 'EOF'
@@ -478,7 +553,6 @@ log "Executando Chromium..."
 flatpak run org.chromium.Chromium \
     --user-data-dir="$CHROMIUM_USER_DATA" \
     --kiosk \
-    --password-store=basic \
     --no-first-run \
     --no-default-browser-check \
     --disable-sync \
@@ -531,7 +605,7 @@ chown $USERNAME:$USERNAME "$INSTALL_DIR/run_chromium.sh"
 #          SCRIPT DO KIOSK (MONITOR)
 # ============================================
 
-echo -e "${GREEN}[8/8] Criando script do monitor...${NC}"
+echo -e "${GREEN}[+] Criando script do monitor...${NC}"
 
 cat > "$INSTALL_DIR/kiosk.sh" << 'EOF'
 #!/bin/bash
@@ -718,8 +792,12 @@ case "$1" in
     logs)
         tail -50 /var/log/kiosk_monitor.log
         ;;
+    tv)
+        echo "Reconfigurando TV HDMI..."
+        /home/$(whoami)/kiosk/reconfigurar_display.sh
+        ;;
     *)
-        echo "Uso: $0 {restart|refresh|status|logs}"
+        echo "Uso: $0 {restart|refresh|status|logs|tv}"
         ;;
 esac
 EOF
@@ -799,8 +877,17 @@ else
     echo "   ⚠️  Configurações pós-reboot pendentes"
 fi
 
-# 9. Logs recentes
-echo -e "\n9. ÚLTIMOS LOGS:"
+# 9. Serviço de display
+echo -e "\n9. SERVIÇO DE DISPLAY:"
+if systemctl is-enabled display-config.service &>/dev/null; then
+    echo "   ✅ Serviço de display habilitado (persistente)"
+    echo "   Última configuração: $(tail -1 /var/log/kiosk_display.log 2>/dev/null || echo 'n/a')"
+else
+    echo "   ❌ Serviço de display não configurado"
+fi
+
+# 10. Logs recentes
+echo -e "\n10. ÚLTIMOS LOGS:"
 tail -10 /var/log/kiosk_monitor.log 2>/dev/null | sed 's/^/   /' || echo "   Log não encontrado"
 
 echo -e "\n========================================="
@@ -810,16 +897,17 @@ chmod +x "$INSTALL_DIR/diagnostico.sh"
 chown $USERNAME:$USERNAME "$INSTALL_DIR/diagnostico.sh"
 
 # ============================================
-#          SERVIÇO SYSTEMD
+#          SERVIÇO SYSTEMD (KIOSK)
 # ============================================
 
-echo -e "${GREEN}[+] Criando serviço systemd...${NC}"
+echo -e "${GREEN}[+] Criando serviço systemd para o kiosk...${NC}"
 
 sudo tee /etc/systemd/system/kiosk.service > /dev/null << EOF
 [Unit]
 Description=Kiosk Mode - Monitor Inteligente
-After=network.target graphical.target
+After=network.target graphical.target display-config.service
 Requires=graphical.target
+Wants=display-config.service
 
 [Service]
 Type=simple
@@ -940,20 +1028,24 @@ echo -e "${GREEN}[+] Ajustando permissões de log...${NC}"
 
 sudo touch /var/log/kiosk_monitor.log
 sudo touch /var/log/kiosk_emergency.log
+sudo touch /var/log/kiosk_display.log
 sudo chown $USERNAME:$USERNAME /var/log/kiosk_monitor.log
 sudo chown $USERNAME:$USERNAME /var/log/kiosk_emergency.log
+sudo chown $USERNAME:$USERNAME /var/log/kiosk_display.log
 sudo chmod 644 /var/log/kiosk_monitor.log
 sudo chmod 644 /var/log/kiosk_emergency.log
+sudo chmod 644 /var/log/kiosk_display.log
 
 sudo mkdir -p /var/log/kiosk_screenshots
 sudo chown -R $USERNAME:$USERNAME /var/log/kiosk_screenshots
 sudo chmod 755 /var/log/kiosk_screenshots
 
 # ============================================
-#          INICIAR SERVIÇO (APÓS REBOOT)
+#          INICIAR SERVIÇOS
 # ============================================
 
-echo -e "${GREEN}[+] Serviço do kiosk será iniciado após o reboot${NC}"
+echo -e "${GREEN}[+] Iniciando serviços...${NC}"
+sudo systemctl daemon-reload
 sudo systemctl enable kiosk.service
 
 # ============================================
@@ -987,8 +1079,10 @@ echo ""
 # Monitores
 echo -e "${BLUE}🖥️  CONFIGURAÇÃO DE MONITORES${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "Duplicação automática: ${GREEN}Ativada${NC}"
-echo -e "TVs HDMI serão detectadas e espelhadas automaticamente"
+echo -e "Duplicação HDMI: ${GREEN}Persistente (ativa em todo boot)${NC}"
+echo -e "Serviço: display-config.service"
+echo -e "Log: /var/log/kiosk_display.log"
+echo -e "Reconfigurar manual: ./reconfigurar_display.sh"
 echo ""
 
 # Chromium
@@ -1024,9 +1118,10 @@ echo -e "${BLUE}📊 FERRAMENTAS DE DIAGNÓSTICO${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "Scripts disponíveis em: $INSTALL_DIR"
 echo -e "  • Diagnóstico: ./diagnostico.sh"
-echo -e "  • Emergência: ./emergency.sh {restart|refresh|status|logs}"
+echo -e "  • Emergência: ./emergency.sh {restart|refresh|status|logs|tv}"
+echo -e "  • Reconfigurar TV: ./reconfigurar_display.sh"
 echo -e "  • Log principal: tail -f /var/log/kiosk_monitor.log"
-echo -e "  • Logs do sistema: sudo journalctl -u kiosk.service -f"
+echo -e "  • Log do display: tail -f /var/log/kiosk_display.log"
 echo ""
 
 # Próximos passos
@@ -1034,7 +1129,7 @@ echo -e "${YELLOW}📌 PRÓXIMOS PASSOS APÓS O REBOOT:${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "1. O sistema reiniciará automaticamente"
 echo -e "2. O login automático será ativado"
-echo -e "3. Monitores serão configurados (duplicação HDMI)"
+echo -e "3. O serviço de display configurará a TV HDMI (se conectada)"
 echo -e "4. Configurações de tela serão aplicadas"
 echo -e "5. O Chromium iniciará em modo kiosk"
 echo -e "6. O VNC será configurado (se selecionado)"
