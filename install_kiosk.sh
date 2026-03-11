@@ -11,6 +11,10 @@
 #   - Permissões de log ajustadas
 #   - Script de execução com variáveis de ambiente explícitas
 #   - Monitoramento avançado de processos
+#   - Login automático configurado
+#   - Bloqueio de tela desabilitado
+#   - Suspensão/hibernação desabilitada
+#   - Relatório detalhado ao final
 # Autor: Baseado em scripts validados para Raspberry Pi e Linux Mint
 
 set -e  # Sai imediatamente se algum comando falhar
@@ -19,6 +23,7 @@ set -e  # Sai imediatamente se algum comando falhar
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # ============================================
@@ -174,16 +179,69 @@ sudo apt-get install -y \
     net-tools \
     flatpak \
     mesa-utils \
-    dbus-x11
+    dbus-x11 \
+    lightdm \
+    lightdm-settings
 
 # Adicionar Flathub
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 
 # ============================================
-#          SCRIPT DE EXECUÇÃO DO CHROMIUM (FINAL)
+#          CONFIGURAÇÃO DE LOGIN AUTOMÁTICO
 # ============================================
 
-echo -e "${GREEN}[3/8] Criando script de execução do Chromium...${NC}"
+echo -e "${GREEN}[3/8] Configurando login automático...${NC}"
+
+# Configurar LightDM para login automático
+sudo tee /etc/lightdm/lightdm.conf.d/50-kiosk.conf > /dev/null << EOF
+[Seat:*]
+autologin-user=$USERNAME
+autologin-user-timeout=0
+user-session=cinnamon
+EOF
+
+# Garantir permissões corretas
+sudo chmod 644 /etc/lightdm/lightdm.conf.d/50-kiosk.conf
+
+echo -e "${GREEN}✓ Login automático configurado para usuário $USERNAME${NC}"
+
+# ============================================
+#          DESABILITAR BLOQUEIO DE TELA
+# ============================================
+
+echo -e "${GREEN}[4/8] Desabilitando bloqueio de tela e suspensão...${NC}"
+
+# Configurações do usuário
+sudo -u $USERNAME gsettings set org.gnome.desktop.screensaver idle-activation-enabled false
+sudo -u $USERNAME gsettings set org.gnome.desktop.screensaver lock-enabled false
+sudo -u $USERNAME gsettings set org.gnome.desktop.screensaver lock-delay 0
+sudo -u $USERNAME gsettings set org.gnome.desktop.session idle-delay 0
+sudo -u $USERNAME gsettings set org.cinnamon.desktop.lockdown disable-lock-screen true
+sudo -u $USERNAME gsettings set org.cinnamon.desktop.screensaver lock-enabled false
+sudo -u $USERNAME gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'
+sudo -u $USERNAME gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 'nothing'
+sudo -u $USERNAME gsettings set org.gnome.settings-daemon.plugins.power idle-dim false
+sudo -u $USERNAME gsettings set org.gnome.desktop.interface enable-animations false
+
+# Configurações do sistema para energia
+sudo tee /etc/systemd/logind.conf.d/50-kiosk.conf > /dev/null << EOF
+[Login]
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+IdleAction=ignore
+EOF
+
+# Desabilitar suspensão automática
+sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+
+echo -e "${GREEN}✓ Bloqueio de tela e suspensão desabilitados${NC}"
+
+# ============================================
+#          SCRIPT DE EXECUÇÃO DO CHROMIUM
+# ============================================
+
+echo -e "${GREEN}[5/8] Criando script de execução do Chromium...${NC}"
 mkdir -p "$INSTALL_DIR"
 
 cat > "$INSTALL_DIR/run_chromium.sh" << 'EOF'
@@ -317,7 +375,7 @@ chmod +x "$INSTALL_DIR/run_chromium.sh"
 #          SCRIPT DO KIOSK (MONITOR)
 # ============================================
 
-echo -e "${GREEN}[4/8] Criando script do monitor...${NC}"
+echo -e "${GREEN}[6/8] Criando script do monitor...${NC}"
 
 cat > "$INSTALL_DIR/kiosk.sh" << 'EOF'
 #!/bin/bash
@@ -470,7 +528,7 @@ chmod +x "$INSTALL_DIR/kiosk.sh"
 #          SCRIPT DE EMERGÊNCIA
 # ============================================
 
-echo -e "${GREEN}[5/8] Criando script de emergência...${NC}"
+echo -e "${GREEN}[7/8] Criando script de emergência...${NC}"
 
 cat > "$INSTALL_DIR/emergency.sh" << 'EOF'
 #!/bin/bash
@@ -515,7 +573,7 @@ chmod +x "$INSTALL_DIR/emergency.sh"
 #          SCRIPT DE DIAGNÓSTICO
 # ============================================
 
-echo -e "${GREEN}[6/8] Criando script de diagnóstico...${NC}"
+echo -e "${GREEN}[8/8] Criando script de diagnóstico...${NC}"
 
 cat > "$INSTALL_DIR/diagnostico.sh" << 'EOF'
 #!/bin/bash
@@ -559,8 +617,21 @@ fi
 echo -e "\n4. FLATPAK:"
 flatpak list | grep chromium | sed 's/^/   /' || echo "   Chromium não encontrado"
 
-# 5. Logs recentes
-echo -e "\n5. ÚLTIMOS LOGS:"
+# 5. Configurações de energia
+echo -e "\n5. ENERGIA:"
+echo "   Suspensão: $(systemctl is-enabled sleep.target 2>/dev/null || echo 'desabilitado')"
+echo "   Bloqueio de tela: $(gsettings get org.gnome.desktop.screensaver lock-enabled 2>/dev/null || echo 'n/a')"
+
+# 6. Login automático
+echo -e "\n6. LOGIN:"
+if [ -f /etc/lightdm/lightdm.conf.d/50-kiosk.conf ]; then
+    echo "   ✅ Login automático configurado"
+else
+    echo "   ❌ Login automático não configurado"
+fi
+
+# 7. Logs recentes
+echo -e "\n7. ÚLTIMOS LOGS:"
 tail -10 /var/log/kiosk_monitor.log 2>/dev/null | sed 's/^/   /' || echo "   Log não encontrado"
 
 echo -e "\n========================================="
@@ -569,10 +640,10 @@ EOF
 chmod +x "$INSTALL_DIR/diagnostico.sh"
 
 # ============================================
-#          SERVIÇO SYSTEMD (CORRIGIDO)
+#          SERVIÇO SYSTEMD
 # ============================================
 
-echo -e "${GREEN}[7/8] Criando serviço systemd...${NC}"
+echo -e "${GREEN}[+] Criando serviço systemd...${NC}"
 
 sudo tee /etc/systemd/system/kiosk.service > /dev/null << EOF
 [Unit]
@@ -618,16 +689,6 @@ WantedBy=graphical.target
 EOF
 
 # ============================================
-#          CONFIGURAÇÕES DO SISTEMA
-# ============================================
-
-echo -e "${GREEN}[8/8] Configurações de energia...${NC}"
-sudo -u $USERNAME gsettings set org.gnome.desktop.screensaver idle-activation-enabled false 2>/dev/null || true
-sudo -u $USERNAME gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null || true
-sudo -u $USERNAME gsettings set org.gnome.desktop.session idle-delay 0 2>/dev/null || true
-sudo -u $USERNAME gsettings set org.gnome.desktop.interface enable-animations false 2>/dev/null || true
-
-# ============================================
 #          CONFIGURAÇÃO VNC (OPCIONAL)
 # ============================================
 
@@ -669,8 +730,10 @@ flatpak install -y flathub org.chromium.Chromium
 flatpak override --user --socket=x11 --share=network --device=dri org.chromium.Chromium
 
 # Verificar instalação
+CHROMIUM_VERSION=""
 if flatpak list | grep -q org.chromium.Chromium; then
-    echo -e "${GREEN}✓ Chromium instalado com sucesso${NC}"
+    CHROMIUM_VERSION=$(flatpak info org.chromium.Chromium | grep Version | awk '{print $2}')
+    echo -e "${GREEN}✓ Chromium $CHROMIUM_VERSION instalado com sucesso${NC}"
     
     # Pré-criar diretório de perfil
     mkdir -p "$CHROMIUM_USER_DATA"
@@ -697,17 +760,6 @@ sudo chown -R $USERNAME:$USERNAME /var/log/kiosk_screenshots
 sudo chmod 755 /var/log/kiosk_screenshots
 
 # ============================================
-#          TESTE RÁPIDO
-# ============================================
-
-echo -e "${GREEN}[+] Testando ambiente gráfico...${NC}"
-if sudo -u $USERNAME DISPLAY=:0 xdpyinfo &>/dev/null; then
-    echo -e "${GREEN}✓ X11 acessível${NC}"
-else
-    echo -e "${YELLOW}⚠ X11 não acessível no momento (normal se não houver sessão gráfica)${NC}"
-fi
-
-# ============================================
 #          INICIAR SERVIÇO
 # ============================================
 
@@ -717,33 +769,96 @@ sudo systemctl enable kiosk.service
 sudo systemctl start kiosk.service
 
 # ============================================
-#          FINALIZAÇÃO
+#          RELATÓRIO FINAL DETALHADO
 # ============================================
 
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}  INSTALAÇÃO COMPLETA!                  ${NC}"
-echo -e "${GREEN}========================================${NC}"
+clear
+echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║         INSTALAÇÃO CONCLUÍDA - RELATÓRIO DO SISTEMA          ║${NC}"
+echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+
+# Informações do Sistema Operacional
+echo -e "${BLUE}📌 SISTEMA OPERACIONAL${NC}"
+echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "Distribuição: $(lsb_release -ds 2>/dev/null || cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')"
+echo -e "Kernel: $(uname -r)"
+echo -e "Arquitetura: $(uname -m)"
+echo -e "Hostname: $(hostname)"
+echo -e "Usuário: $USERNAME"
+echo ""
+
+# Ambiente Gráfico
+echo -e "${BLUE}🖥️  AMBIENTE GRÁFICO${NC}"
+echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "Display Manager: LightDM"
+echo -e "Sessão: Cinnamon"
+echo -e "Resolução: $(DISPLAY=:0 xdpyinfo 2>/dev/null | grep dimensions | awk '{print $2}' || echo 'Não disponível')"
+echo -e "Login Automático: Configurado para $USERNAME"
+echo ""
+
+# Chromium
+echo -e "${BLUE}🌐 CHROMIUM${NC}"
+echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "Versão: $CHROMIUM_VERSION"
+echo -e "Modo: Kiosk / PWA"
 echo -e "URL: $KIOSK_URL"
-echo ""
-echo -e "${YELLOW}ACESSO REMOTO:${NC}"
-echo -e "  • SSH: ssh $USERNAME@$IP_ADDR"
-echo ""
-
-if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]]; then
-    echo -e "${YELLOW}VNC:${NC}"
-    echo -e "  • Porta: 5900"
-    echo -e "  • Inicia automático no reboot"
-    echo ""
+echo -e "Perfil: $CHROMIUM_USER_DATA"
+if pgrep -f "flatpak run.*chromium" > /dev/null; then
+    echo -e "Status: ${GREEN}✅ Rodando${NC}"
+    CHROME_PID=$(pgrep -f "flatpak run.*chromium" | head -1)
+    echo -e "PID: $CHROME_PID"
+    echo -e "Uptime: $(ps -o etime= -p $CHROME_PID | xargs)"
+else
+    echo -e "Status: ${YELLOW}⚠️  Aguardando inicialização${NC}"
 fi
-
-echo -e "${YELLOW}COMANDOS ÚTEIS:${NC}"
-echo -e "  • Diagnóstico: $INSTALL_DIR/diagnostico.sh"
-echo -e "  • Emergência: $INSTALL_DIR/emergency.sh {restart|refresh|status|logs}"
-echo -e "  • Status: sudo systemctl status kiosk.service"
-echo -e "  • Logs: sudo journalctl -u kiosk.service -f"
 echo ""
 
-echo -e "${YELLOW}REINICIANDO EM 10 SEGUNDOS...${NC}"
-echo -e "${YELLOW}(pressione Ctrl+C para cancelar)${NC}"
-sleep 10
-sudo reboot
+# Configurações de Energia
+echo -e "${BLUE}⚡ CONFIGURAÇÕES DE ENERGIA${NC}"
+echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "Bloqueio de tela: ${GREEN}Desabilitado${NC}"
+echo -e "Suspensão: ${GREEN}Desabilitada${NC}"
+echo -e "Hibernação: ${GREEN}Desabilitada${NC}"
+echo -e "Proteção de tela: ${GREEN}Desabilitada${NC}"
+echo ""
+
+# Acesso Remoto
+echo -e "${BLUE}🔌 ACESSO REMOTO${NC}"
+echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "SSH: ${GREEN}✅ Ativo${NC} - ssh $USERNAME@$IP_ADDR"
+if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]]; then
+    if pgrep -f vino-server > /dev/null; then
+        echo -e "VNC: ${GREEN}✅ Ativo${NC} - Porta 5900"
+    else
+        echo -e "VNC: ${YELLOW}⚠️  Configurado (inicia no reboot)${NC}"
+    fi
+else
+    echo -e "VNC: ${YELLOW}⚠️  Não configurado${NC}"
+fi
+echo ""
+
+# Logs e Diagnóstico
+echo -e "${BLUE}📊 FERRAMENTAS DE DIAGNÓSTICO${NC}"
+echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "Scripts disponíveis em: $INSTALL_DIR"
+echo -e "  • Diagnóstico: ./diagnostico.sh"
+echo -e "  • Emergência: ./emergency.sh {restart|refresh|status|logs}"
+echo -e "  • Log principal: tail -f /var/log/kiosk_monitor.log"
+echo -e "  • Logs do sistema: sudo journalctl -u kiosk.service -f"
+echo ""
+
+# Serviço
+echo -e "${BLUE}⚙️  STATUS DO SERVIÇO${NC}"
+echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+if systemctl is-active --quiet kiosk.service; then
+    echo -e "kiosk.service: ${GREEN}✅ Ativo${NC}"
+    systemctl status kiosk.service --no-pager | grep "Active:" | sed 's/^/  /'
+else
+    echo -e "kiosk.service: ${RED}❌ Inativo${NC}"
+fi
+echo ""
+
+echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║      O SISTEMA SERÁ REINICIADO EM 15 SEGUNDOS               ║${NC}"
+echo -e "${
