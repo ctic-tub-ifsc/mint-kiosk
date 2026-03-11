@@ -3,6 +3,7 @@
 # Script de Configuração do Kiosk para Linux Mint
 # Versão unificada com suporte a PWA e detecção inteligente de travamentos
 # Otimizado para Linux Mint 22 Cinnamon
+# CORREÇÃO: SSH instalado primeiro, VNC sem systemd user
 # Autor: Baseado em scripts validados para Raspberry Pi e Linux Mint
 
 set -e  # Sai imediatamente se algum comando falhar
@@ -140,22 +141,39 @@ if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]]; then
 fi
 
 # ============================================
+#          PASSO 1: SSH PRIMEIRO!
+# ============================================
+
+echo -e "${GREEN}[1/8] Instalando e configurando SSH para acesso remoto...${NC}"
+sudo apt-get update
+sudo apt-get install -y openssh-server
+
+# Garantir que SSH está rodando
+sudo systemctl enable ssh
+sudo systemctl start ssh
+
+# Configurar firewall para SSH
+sudo ufw allow 22/tcp
+sudo ufw --force enable
+
+echo -e "${GREEN}✓ SSH configurado e rodando na porta 22${NC}"
+echo -e "${YELLOW}  Agora você pode acessar remotamente via: ssh $(logname)@$(hostname -I | awk '{print $1}')${NC}"
+sleep 2
+
+# ============================================
 #          INSTALAÇÃO DE DEPENDÊNCIAS
 # ============================================
 
-echo -e "${GREEN}[1/8] Instalando dependências do sistema...${NC}"
-sudo apt-get update
+echo -e "${GREEN}[2/8] Instalando dependências do sistema...${NC}"
 sudo apt-get install -y \
     unclutter \
     xdotool \
     curl \
     wget \
-    openssh-server \
     x11-utils \
     xprintidle \
     imagemagick \
     gnome-screenshot \
-    ufw \
     bc \
     net-tools
 
@@ -164,7 +182,7 @@ sudo apt-get install -y \
 #         (Versão corrigida - sem refresh cego)
 # ============================================
 
-echo -e "${GREEN}[2/8] Criando script do kiosk com monitor inteligente...${NC}"
+echo -e "${GREEN}[3/8] Criando script do kiosk com monitor inteligente...${NC}"
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$SCREENSHOT_DIR"
 sudo chmod 755 "$SCREENSHOT_DIR"
@@ -430,30 +448,24 @@ EOF
 chmod +x "$INSTALL_DIR/kiosk.sh"
 
 # ============================================
-#          SCRIPT DE EMERGÊNCIA (OPCIONAL)
-#          CORRIGIDO: while loop com sintaxe correta
+#          SCRIPT DE EMERGÊNCIA 
 # ============================================
 
-echo -e "${GREEN}[3/8] Criando script de emergência (apenas para casos extremos)...${NC}"
+echo -e "${GREEN}[4/8] Criando script de emergência...${NC}"
 cat > "$INSTALL_DIR/emergency_refresh.sh" << 'EOF'
 #!/bin/bash
-# Script de EMERGÊNCIA - executado manualmente ou em casos extremos
-# NÃO configurar no cron automático!
-# VERSÃO CORRIGIDA: while loop com sintaxe adequada
+# Script de EMERGÊNCIA - executado manualmente
 
 LOG_FILE="/var/log/kiosk_emergency.log"
-EMERGENCY_FILE="/tmp/kiosk_emergency"
 USER_HOME="/home/$(logname)"
 
-# Função de log
 log_emergency() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
 }
 
 log_emergency "Script de emergência iniciado"
 
-# Determina se deve executar (flag de emergência ou força manual)
-if [[ -f "$EMERGENCY_FILE" ]] || [[ "$1" == "--force" ]]; then
+if [[ "$1" == "--force" ]]; then
     log_emergency "Executando refresh forçado em todas as janelas Chromium"
     
     export DISPLAY=:0
@@ -463,20 +475,12 @@ if [[ -f "$EMERGENCY_FILE" ]] || [[ "$1" == "--force" ]]; then
     /usr/bin/xdotool search --onlyvisible --class "chromium" | while read window; do
         log_emergency "Enviando F5 para janela: $window"
         /usr/bin/xdotool windowactivate --sync "$window" key --clearmodifiers F5
-        sleep 0.5  # Pequena pausa entre janelas
+        sleep 0.5
     done
-    
-    # Remove a flag se existir
-    if [[ -f "$EMERGENCY_FILE" ]]; then
-        rm -f "$EMERGENCY_FILE"
-        log_emergency "Flag de emergência removida"
-    fi
     
     log_emergency "Refresh de emergência concluído"
 else
-    log_emergency "Nenhuma flag de emergência encontrada. Use --force para executar manualmente."
-    echo "Para executar refresh manual: $0 --force"
-    echo "Ou crie a flag: touch $EMERGENCY_FILE"
+    echo "Uso: $0 --force"
     exit 1
 fi
 
@@ -486,10 +490,10 @@ EOF
 chmod +x "$INSTALL_DIR/emergency_refresh.sh"
 
 # ============================================
-#          SERVIÇO SYSTEMD
+#          SERVIÇO SYSTEMD (KIOSK)
 # ============================================
 
-echo -e "${GREEN}[4/8] Criando serviço systemd...${NC}"
+echo -e "${GREEN}[5/8] Criando serviço systemd para o kiosk...${NC}"
 sudo tee /etc/systemd/system/kiosk.service > /dev/null << EOF
 [Unit]
 Description=Kiosk Mode - Monitor Inteligente
@@ -516,14 +520,14 @@ EOF
 #          REMOVER CRON AGRESSIVO
 # ============================================
 
-echo -e "${GREEN}[5/8] Removendo crons agressivos (se existirem)...${NC}"
+echo -e "${GREEN}[6/8] Removendo crons agressivos (se existirem)...${NC}"
 (crontab -u $(logname) -l 2>/dev/null | grep -v "xdotool\|F5\|refresh" || true) | crontab -u $(logname) -
 
 # ============================================
 #          CONFIGURAÇÕES DO SISTEMA
 # ============================================
 
-echo -e "${GREEN}[6/8] Configurações de energia e tela...${NC}"
+echo -e "${GREEN}[7/8] Configurações de energia e tela...${NC}"
 gsettings set org.gnome.desktop.screensaver idle-activation-enabled false
 gsettings set org.gnome.desktop.screensaver lock-enabled false
 gsettings set org.gnome.desktop.session idle-delay 0
@@ -532,11 +536,11 @@ gsettings set org.gnome.desktop.interface enable-animations false
 gsettings set org.gnome.desktop.notifications show-banners false
 
 # ============================================
-#          CONFIGURAÇÃO VNC (OTIMIZADA PARA CINNAMON)
+#          CONFIGURAÇÃO VNC (SOMENTE AUTOSTART)
 # ============================================
 
 if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]] && [[ -n "$VNC_PASSWORD" ]]; then
-    echo -e "${GREEN}[7/8] Configurando VNC para Cinnamon...${NC}"
+    echo -e "${GREEN}[8/8] Configurando VNC via autostart (SEM systemd user)...${NC}"
     sudo apt-get install -y vino
     
     # Configurações do VNC
@@ -544,8 +548,6 @@ if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]] && [[ -n "$VNC_PASSWORD" ]]; then
     gsettings set org.gnome.Vino require-encryption false
     gsettings set org.gnome.Vino authentication-methods "['vnc']"
     gsettings set org.gnome.Vino vnc-password "$(echo -n "$VNC_PASSWORD" | base64)"
-    
-    # Configurações adicionais para Cinnamon
     gsettings set org.gnome.Vino notify-on-connect false
     gsettings set org.gnome.Vino icon-visibility 'never'
     
@@ -553,121 +555,56 @@ if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]] && [[ -n "$VNC_PASSWORD" ]]; then
     sudo ufw allow 5900/tcp
     sudo ufw --force enable
     
-    # Configurar linger para manter serviços após logout
-    sudo loginctl enable-linger $(logname)
-    
-    # Configurar systemd user com ambiente correto
-    mkdir -p /home/$(logname)/.config/systemd/user
-    mkdir -p /home/$(logname)/.config/systemd/user/vino-server.service.d
-    
-    cat > /home/$(logname)/.config/systemd/user/vino-server.service.d/override.conf << EOF
-[Service]
-Environment="DISPLAY=:0"
-Environment="XAUTHORITY=/home/$(logname)/.Xauthority"
-Environment="XDG_RUNTIME_DIR=/run/user/$(id -u $(logname))"
-EOF
-    
-    # Criar autostart fallback para Cinnamon
+    # CRIAR AUTOSTART (MÉTODO CONFIÁVEL PARA CINNAMON)
     mkdir -p /home/$(logname)/.config/autostart
+    
     cat > /home/$(logname)/.config/autostart/vino-server.desktop << EOF
 [Desktop Entry]
 Type=Application
 Name=Vino VNC Server
-Comment=Compartilhamento de área de trabalho VNC
 Exec=/usr/lib/vino/vino-server
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
 X-GNOME-Autostart-Phase=Applications
 X-Cinnamon-Autostart-Phase=Applications
-OnlyShowIn=GNOME;XFCE;KDE;Cinnamon;
+OnlyShowIn=Cinnamon;
 EOF
     
     chmod +x /home/$(logname)/.config/autostart/vino-server.desktop
     chown $(logname):$(logname) /home/$(logname)/.config/autostart/vino-server.desktop
     
-    # Recarregar systemd user
-    systemctl --user daemon-reload
-    
-    # Tentar iniciar via systemd primeiro
-    echo -e "${YELLOW}Tentando iniciar VNC via systemd...${NC}"
-    systemctl --user enable vino-server.service 2>/dev/null || true
-    systemctl --user start vino-server.service 2>/dev/null || true
-    
-    sleep 3
-    
-    # Verificar se iniciou
-    if systemctl --user is-active vino-server.service > /dev/null 2>&1; then
-        echo -e "${GREEN}✓ VNC iniciado via systemd${NC}"
-    else
-        echo -e "${YELLOW}⚠ Iniciando VNC via autostart (fallback)${NC}"
-        echo -e "${YELLOW}  O VNC iniciará automaticamente no próximo login gráfico${NC}"
-    fi
-    
-    echo -e "${GREEN}VNC configurado na porta 5900${NC}"
-    
-    # Criar script de verificação VNC
-    cat > "$INSTALL_DIR/check_vnc.sh" << 'EOFVNC'
-#!/bin/bash
-# Script para verificar status do VNC no Cinnamon
-
-LOG_FILE="/var/log/kiosk_vnc_check.log"
-
-echo "$(date) - Verificando VNC..." | tee -a "$LOG_FILE"
-echo "==================================="
-
-echo "1. Verificando processo vino-server:"
-if pgrep -f vino-server > /dev/null; then
-    echo "   ✓ vino-server está rodando (PID: $(pgrep -f vino-server))"
-else
-    echo "   ✗ vino-server não está rodando"
-fi
-echo ""
-
-echo "2. Verificando porta 5900:"
-if netstat -tulpn 2>/dev/null | grep -q 5900; then
-    echo "   ✓ Porta 5900 está em listening"
-    netstat -tulpn 2>/dev/null | grep 5900
-else
-    echo "   ✗ Porta 5900 não está em listening"
-fi
-echo ""
-
-echo "3. Verificando configurações:"
-echo "   Autenticação: $(gsettings get org.gnome.Vino authentication-methods)"
-echo "   Criptografia: $(gsettings get org.gnome.Vino require-encryption)"
-echo "   Notificações: $(gsettings get org.gnome.Vino notify-on-connect)"
-echo ""
-
-echo "4. Tentando iniciar manualmente (se necessário):"
-if ! pgrep -f vino-server > /dev/null; then
-    echo "   Iniciando vino-server..."
+    # Iniciar VNC agora (para não precisar reiniciar para testar)
+    echo -e "${YELLOW}Iniciando VNC agora para teste...${NC}"
     export DISPLAY=:0
     export XAUTHORITY=/home/$(logname)/.Xauthority
     /usr/lib/vino/vino-server &
     sleep 2
-    if pgrep -f vino-server > /dev/null; then
-        echo "   ✓ VNC iniciado com sucesso"
-    else
-        echo "   ✗ Falha ao iniciar VNC"
-    fi
-else
-    echo "   VNC já está rodando"
-fi
-
-echo "==================================="
-echo "Log salvo em: $LOG_FILE"
+    
+    echo -e "${GREEN}✓ VNC configurado via autostart (iniciará automaticamente no próximo login)${NC}"
+    
+    # Script de verificação simples
+    cat > "$INSTALL_DIR/check_vnc.sh" << 'EOFVNC'
+#!/bin/bash
+echo "=== VERIFICAÇÃO VNC ==="
+echo "Processo: $(pgrep -f vino-server || echo 'NÃO RODANDO')"
+echo "Porta 5900: $(netstat -tulpn 2>/dev/null | grep 5900 || echo 'FECHADA')"
+echo ""
+echo "Para iniciar manualmente:"
+echo "export DISPLAY=:0"
+echo "export XAUTHORITY=/home/$(logname)/.Xauthority"
+echo "/usr/lib/vino/vino-server &"
 EOFVNC
-
+    
     chmod +x "$INSTALL_DIR/check_vnc.sh"
-    echo -e "${GREEN}Script de verificação VNC criado: $INSTALL_DIR/check_vnc.sh${NC}"
+    echo -e "${GREEN}Script de verificação: $INSTALL_DIR/check_vnc.sh${NC}"
 fi
 
 # ============================================
 #          INSTALAÇÃO DO CHROMIUM
 # ============================================
 
-echo -e "${GREEN}[8/8] Instalando Chromium...${NC}"
+echo -e "${GREEN}[+] Instalando Chromium...${NC}"
 if ! command -v chromium &> /dev/null; then
     sudo apt-get install -y chromium-browser || {
         wget -O /tmp/chromium.deb http://packages.linuxmint.com/pool/upstream/c/chromium/chromium_latest_amd64.deb
@@ -678,19 +615,21 @@ if ! command -v chromium &> /dev/null; then
 fi
 
 # ============================================
-#          CONFIGURAÇÕES ADICIONAIS PARA CINNAMON
+#          CONFIGURAÇÕES ADICIONAIS
 # ============================================
 
-echo -e "${GREEN}[+] Aplicando configurações adicionais para Cinnamon...${NC}"
-
-# Desabilitar notificações do Cinnamon
+echo -e "${GREEN}[+] Aplicando configurações adicionais...${NC}"
 gsettings set org.cinnamon.desktop.notifications show-notifications false
-
-# Desabilitar efeitos de workspace
 gsettings set org.cinnamon enable-effects false
 
-# Configurar para não pedir senha ao acordar
-gsettings set org.cinnamon.desktop.screensaver lock-enabled false
+# ============================================
+#          INICIAR SERVIÇO DO KIOSK
+# ============================================
+
+echo -e "${GREEN}[+] Iniciando serviço do kiosk...${NC}"
+sudo systemctl daemon-reload
+sudo systemctl enable kiosk.service
+sudo systemctl start kiosk.service
 
 # ============================================
 #          FINALIZAÇÃO
@@ -698,36 +637,34 @@ gsettings set org.cinnamon.desktop.screensaver lock-enabled false
 
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  INSTALAÇÃO COMPLETA!                  ${NC}"
-echo -e "${GREEN}  Linux Mint 22 Cinnamon                ${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo -e "URL: $KIOSK_URL"
-echo -e "Modo: PWA com cache offline habilitado"
-echo -e "Monitor: Inteligente (sem refresh cego)"
-echo -e "Screenshots: Apenas em falhas (máx 10)"
-echo -e "Logs: $LOG_FILE"
-echo -e ""
-echo -e "${YELLOW}IMPORTANTE:${NC}"
-echo -e "- O sistema NÃO faz refresh automático cego"
-echo -e "- Screenshots são gerados APENAS quando há falha"
-echo -e "- O PWA pode usar cache offline normalmente"
-echo -e "- Em caso de problemas, verifique os logs:"
-echo -e "  sudo tail -f $LOG_FILE"
-echo -e ""
+echo ""
+echo -e "${YELLOW}ACESSO REMOTO GARANTIDO:${NC}"
+echo -e "  • SSH: ssh $(logname)@$(hostname -I | awk '{print $1}')"
+echo -e "  • SSH já está rodando - você pode continuar a instalação remotamente!"
+echo ""
+
+if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]]; then
+    echo -e "${YELLOW}VNC:${NC}"
+    echo -e "  • Porta: 5900"
+    echo -e "  • Status: $(pgrep -f vino-server > /dev/null && echo 'RODANDO' || echo 'AGUARDANDO REBOOT')"
+    echo -e "  • Verificar: $INSTALL_DIR/check_vnc.sh"
+    echo ""
+fi
+
 echo -e "${YELLOW}SCRIPTS DISPONÍVEIS:${NC}"
 echo -e "  • Refresh manual: $INSTALL_DIR/emergency_refresh.sh --force"
 echo -e "  • Verificar VNC: $INSTALL_DIR/check_vnc.sh"
-echo -e "  • Logs emergência: /var/log/kiosk_emergency.log"
-echo -e ""
-echo -e "${YELLOW}VNC (se configurado):${NC}"
-echo -e "  • Porta: 5900"
-echo -e "  • Inicia automaticamente via systemd ou autostart"
-echo -e "  • Para verificar: $INSTALL_DIR/check_vnc.sh"
-echo -e ""
+echo ""
+
 echo -e "${YELLOW}COMANDOS ÚTEIS:${NC}"
-echo -e "  • Status do kiosk: sudo systemctl status kiosk.service"
-echo -e "  • Logs do kiosk: sudo journalctl -u kiosk.service -f"
-echo -e "  • Logs do monitor: sudo tail -f /var/log/kiosk_monitor.log"
-echo -e ""
-echo -e "${YELLOW}Reiniciando em 10 segundos...${NC}"
+echo -e "  • Status: sudo systemctl status kiosk.service"
+echo -e "  • Logs: sudo journalctl -u kiosk.service -f"
+echo -e "  • Monitor: sudo tail -f /var/log/kiosk_monitor.log"
+echo ""
+
+echo -e "${YELLOW}REINICIANDO EM 10 SEGUNDOS...${NC}"
+echo -e "${YELLOW}(pressione Ctrl+C para cancelar o reboot)${NC}"
 sleep 10
 sudo reboot
