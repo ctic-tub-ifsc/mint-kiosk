@@ -12,7 +12,8 @@
 #   - Login automático configurado
 #   - Bloqueio de tela desabilitado (pós-reboot)
 #   - Suspensão/hibernação desabilitada
-#   - Relatório detalhado ao final (CORRIGIDO)
+#   - Duplicação automática para TV HDMI
+#   - Relatório detalhado ao final
 # Autor: Baseado em scripts validados para Raspberry Pi e Linux Mint
 
 set -e  # Sai imediatamente se algum comando falhar
@@ -179,7 +180,8 @@ sudo apt-get install -y \
     mesa-utils \
     dbus-x11 \
     lightdm \
-    lightdm-settings
+    lightdm-settings \
+    x11-xserver-utils  # Para xrandr
 
 # Adicionar Flathub
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
@@ -267,6 +269,69 @@ if ! xdpyinfo &>/dev/null; then
 fi
 
 echo "$(date) - X11 acessível, aplicando configurações..."
+
+# ============================================
+#          CONFIGURAÇÃO DE DUPLICAÇÃO DE TELA
+# ============================================
+
+echo "$(date) - Verificando monitores para duplicação..."
+
+# Obter lista de monitores conectados
+MONITORS=$(xrandr --current | grep " connected" | awk '{print $1}')
+MONITOR_COUNT=$(echo "$MONITORS" | wc -l)
+
+echo "$(date) - Monitores encontrados: $MONITOR_COUNT"
+xrandr --current | grep " connected" | sed 's/^/   /'
+
+# Se houver mais de um monitor, configurar duplicação
+if [ "$MONITOR_COUNT" -gt 1 ]; then
+    # Identificar monitores (priorizando HDMI como secundário)
+    PRIMARY=""
+    SECONDARY=""
+    
+    for monitor in $MONITORS; do
+        if echo "$monitor" | grep -qi "hdmi"; then
+            SECONDARY="$monitor"
+        else
+            PRIMARY="$monitor"
+        fi
+    done
+    
+    # Se não encontrou primário, usar o primeiro
+    if [ -z "$PRIMARY" ]; then
+        PRIMARY=$(echo "$MONITORS" | head -1)
+    fi
+    
+    # Se não encontrou secundário, usar o último
+    if [ -z "$SECONDARY" ]; then
+        SECONDARY=$(echo "$MONITORS" | tail -1)
+    fi
+    
+    echo "$(date) - Monitor primário: $PRIMARY"
+    echo "$(date) - Monitor secundário: $SECONDARY"
+    
+    # Obter resolução do monitor primário
+    RESOLUTION=$(xrandr | grep -A1 "^$PRIMARY connected" | tail -1 | awk '{print $1}')
+    
+    echo "$(date) - Resolução primária: $RESOLUTION"
+    
+    # Tentar configurar duplicação
+    if xrandr --output "$SECONDARY" --mode "$RESOLUTION" --same-as "$PRIMARY" 2>/dev/null; then
+        echo "$(date) - ✅ Duplicação configurada com sucesso"
+    else
+        echo "$(date) - ⚠️ Resolução não suportada, tentando modo automático..."
+        xrandr --output "$SECONDARY" --auto --same-as "$PRIMARY"
+    fi
+    
+    echo "$(date) - Configuração final:"
+    xrandr --current | grep " connected" | sed 's/^/   /'
+else
+    echo "$(date) - Apenas um monitor detectado, duplicação não necessária"
+fi
+
+# ============================================
+#          CONFIGURAÇÕES DO USUÁRIO
+# ============================================
 
 # Desabilitar protetor de tela e bloqueio
 gsettings set org.gnome.desktop.screensaver idle-activation-enabled false 2>/dev/null
@@ -413,7 +478,6 @@ log "Executando Chromium..."
 flatpak run org.chromium.Chromium \
     --user-data-dir="$CHROMIUM_USER_DATA" \
     --kiosk \
-    --password-store=basic \
     --no-first-run \
     --no-default-browser-check \
     --disable-sync \
@@ -635,7 +699,7 @@ case "$1" in
         pkill -f chromium
         sleep 2
         export DISPLAY=:0
-        /home/$(whoami)/kiosk/run_chromium.sh "https://mural.tubarao.ifsc.edu.br/?bloco=b"
+        /home/$(whoami)/kiosk/run_chromium.sh "$KIOSK_URL"
         ;;
     refresh)
         echo "Forçando refresh F5..."
@@ -693,8 +757,12 @@ fi
 
 ls -la /tmp/.X11-unix/ 2>/dev/null | sed 's/^/   /'
 
-# 3. Chromium
-echo -e "\n3. CHROMIUM:"
+# 3. Monitores
+echo -e "\n3. MONITORES:"
+xrandr --current | grep " connected" | sed 's/^/   /'
+
+# 4. Chromium
+echo -e "\n4. CHROMIUM:"
 if pgrep -f "flatpak run.*chromium" > /dev/null; then
     PID=$(pgrep -f "flatpak run.*chromium" | head -1)
     echo "   ✅ Rodando (PID: $PID)"
@@ -706,32 +774,32 @@ else
     echo "   ❌ Chromium não está rodando"
 fi
 
-# 4. Flatpak
-echo -e "\n4. FLATPAK:"
+# 5. Flatpak
+echo -e "\n5. FLATPAK:"
 flatpak list | grep chromium | sed 's/^/   /' || echo "   Chromium não encontrado"
 
-# 5. Configurações de energia
-echo -e "\n5. ENERGIA:"
+# 6. Configurações de energia
+echo -e "\n6. ENERGIA:"
 echo "   Suspensão: $(systemctl is-enabled sleep.target 2>/dev/null || echo 'desabilitado')"
 
-# 6. Login automático
-echo -e "\n6. LOGIN:"
+# 7. Login automático
+echo -e "\n7. LOGIN:"
 if [ -f /etc/lightdm/lightdm.conf.d/50-kiosk.conf ]; then
     echo "   ✅ Login automático configurado"
 else
     echo "   ❌ Login automático não configurado"
 fi
 
-# 7. Configurações pós-reboot
-echo -e "\n7. PÓS-REBOOT:"
+# 8. Configurações pós-reboot
+echo -e "\n8. PÓS-REBOOT:"
 if [ -f "$HOME/.kiosk_configured" ]; then
     echo "   ✅ Configurações pós-reboot já aplicadas"
 else
     echo "   ⚠️  Configurações pós-reboot pendentes"
 fi
 
-# 8. Logs recentes
-echo -e "\n8. ÚLTIMOS LOGS:"
+# 9. Logs recentes
+echo -e "\n9. ÚLTIMOS LOGS:"
 tail -10 /var/log/kiosk_monitor.log 2>/dev/null | sed 's/^/   /' || echo "   Log não encontrado"
 
 echo -e "\n========================================="
@@ -888,7 +956,7 @@ echo -e "${GREEN}[+] Serviço do kiosk será iniciado após o reboot${NC}"
 sudo systemctl enable kiosk.service
 
 # ============================================
-#          RELATÓRIO FINAL DETALHADO (CORRIGIDO)
+#          RELATÓRIO FINAL DETALHADO
 # ============================================
 
 clear
@@ -913,6 +981,13 @@ echo -e "━━━━━━━━━━━━━━━━━━━━━━━�
 echo -e "Display Manager: LightDM"
 echo -e "Sessão: Cinnamon"
 echo -e "Login Automático: ${GREEN}Configurado para $USERNAME${NC}"
+echo ""
+
+# Monitores
+echo -e "${BLUE}🖥️  CONFIGURAÇÃO DE MONITORES${NC}"
+echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "Duplicação automática: ${GREEN}Ativada${NC}"
+echo -e "TVs HDMI serão detectadas e espelhadas automaticamente"
 echo ""
 
 # Chromium
@@ -958,9 +1033,10 @@ echo -e "${YELLOW}📌 PRÓXIMOS PASSOS APÓS O REBOOT:${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "1. O sistema reiniciará automaticamente"
 echo -e "2. O login automático será ativado"
-echo -e "3. Configurações de tela serão aplicadas"
-echo -e "4. O Chromium iniciará em modo kiosk"
-echo -e "5. O VNC será configurado (se selecionado)"
+echo -e "3. Monitores serão configurados (duplicação HDMI)"
+echo -e "4. Configurações de tela serão aplicadas"
+echo -e "5. O Chromium iniciará em modo kiosk"
+echo -e "6. O VNC será configurado (se selecionado)"
 echo ""
 
 echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
