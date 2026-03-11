@@ -1,212 +1,213 @@
-# Mint Kiosk - Sistema de Quiosque Digital para Linux Mint
+# 🖥️ Mint Kiosk - Transforme seu Linux Mint em um Painel Digital
 
-Este script transforma o Linux Mint em um quiosque digital inteligente, ideal para murais de avisos, painéis informativos e aplicações PWA (Progressive Web Apps). O sistema é auto-gerenciável, com detecção inteligente de falhas e recuperação automática.
+Este script transforma qualquer computador com Linux Mint em um **painel digital automático** - perfeito para murais de avisos, TV corporativa, displays de informações ou aplicações PWA.
 
-> Testado no Linux Mint 22.3
+✅ Testado no **Linux Mint 22.3**  
+⚙️ Funciona em qualquer PC com Linux Mint
 
-## Pré-requisitos
+---
 
-- Linux Mint 22.3 (ou superior) instalado
-- Conexão com internet para instalação
-- Usuário com privilégios sudo
-
-## Instalação em Comando Único
+## 🚀 Instalação em UM COMANDO
 
 ```bash
 sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/ctic-tub-ifsc/mint-kiosk/refs/heads/main/install_kiosk.sh)"
 ```
 
-> **Nota:** Durante a instalação, você precisará informar:
-> - URL do site/mural a ser exibido
-> - (Opcional) Configuração de acesso VNC com senha
+**O que vai acontecer:**
+1. O script vai pedir a **URL do site** que você quer mostrar
+2. Vai perguntar se quer **acesso remoto VNC** (opcional)
+3. Faz tudo sozinho e reinicia o PC
+4. Pronto! Na próxima inicialização já estará funcionando
 
-## Funcionalidades Principais
+---
 
-### 1. **Exibição em Modo Quiosque**
-- Chromium em tela cheia (kiosk mode)
-- Sem barras de ferramentas ou infobars
-- Sem protetor de tela ou suspensão automática
-- Cursor do mouse oculto quando inativo
+## ✨ O que esse script faz por você (de forma simples)
 
-### 2. **Monitoramento Inteligente de Saúde**
-- Verificação contínua do processo Chromium
-- Detecção de janelas congeladas ou não responsivas
-- Diagnóstico pós-falha com screenshots automáticos
-- Suporte a PWA com cache offline preservado
+### 📺 **1. Vira um painel automático**
+- Abre o navegador em tela cheia (modo kiosk)
+- Esconde o mouse quando parado
+- Desliga protetor de tela e suspensão
+- **Novo:** Se conectar uma TV via HDMI, ela já aparece espelhada automaticamente!
 
-### 3. **Recuperação Automática**
-- **Refresh suave (F5)** ao primeiro sinal de problema
-- **Reinicialização completa** após múltiplas falhas consecutivas
-- **Detecção de conectividade** da URL alvo
-- **Preservação do cache** para exibição offline
+### 🧠 **2. Se cuida sozinho (monitoramento inteligente)**
+- Fica de olho no navegador a cada 30 segundos
+- Se perceber que travou, tenta dar um **F5** automático
+- Se não resolver, reinicia o navegador
+- Se mesmo assim não funcionar, recarrega tudo do zero
 
-### 4. **Diagnóstico e Logs**
-- Screenshots automáticos **APENAS quando ocorrem falhas**
-- Logs detalhados em `/var/log/kiosk_monitor.log`
-- Pacote de evidências para troubleshooting
-- Limpeza automática de logs antigos
+### 📸 **3. Tira "fotos" quando dá problema**
+- Quando algo errado acontece, tira um **print da tela**
+- Salva na pasta `/var/log/kiosk_screenshots/`
+- Assim você pode ver **o que estava na tela na hora do erro**
+- Guarda só os últimos 10 prints (não enche o disco)
 
-### 5. **Acesso Remoto (Opcional)**
-- Servidor VNC integrado
-- SSH ativado para administração
-- Firewall configurado automaticamente
+### 📊 **4. Gera relatório completo no final**
+- Mostra versão do sistema, kernel, ambiente gráfico
+- Informa versão do Chromium instalado
+- Diz se o SSH está ativo e qual IP usar
+- Mostra se o VNC foi configurado
 
-## Comandos Básicos de Verificação
+### 🔌 **5. Acesso remoto garantido**
+- **SSH** ativado automático (porta 22)
+- **VNC** opcional para controle remoto da tela
+- Firewall liberado só para o necessário
 
-Após a instalação, utilize estes comandos para verificar o funcionamento:
+---
 
-### Verificar Status do Serviço
+## 📋 O que você precisa saber depois de instalado
+
+### Comandos úteis para o dia a dia
+
 ```bash
-# Status do serviço kiosk
+# Ver se o serviço está rodando
 sudo systemctl status kiosk.service
 
-# Ver logs em tempo real
+# Ver os logs em tempo real (o que está acontecendo)
 sudo journalctl -u kiosk.service -f
 
-# Últimas 50 linhas do log
-sudo journalctl -u kiosk.service -n 50 --no-pager
-```
+# Ver o log principal do painel
+tail -f /var/log/kiosk_monitor.log
 
-### Verificar Logs do Monitor
-```bash
-# Log principal do kiosk
-sudo tail -f /var/log/kiosk_monitor.log
-
-# Ver últimas falhas registradas
-grep "ERRO" /var/log/kiosk_monitor.log | tail -20
-
-# Ver screenshots de diagnóstico
-ls -la /var/log/kiosk_screenshots/
-```
-
-### Comandos de Gerenciamento
-```bash
-# Reiniciar o serviço kiosk (sem reiniciar o sistema)
+# Se o navegador travar, force um F5 manual
 sudo systemctl restart kiosk.service
-
-# Parar o serviço temporariamente
-sudo systemctl stop kiosk.service
-
-# Iniciar o serviço manualmente
-sudo systemctl start kiosk.service
-
-# Desabilitar o serviço (não inicia no boot)
-sudo systemctl disable kiosk.service
-
-# Reabilitar o serviço
-sudo systemctl enable kiosk.service
 ```
 
-### Verificar Acesso VNC (se configurado)
+### Scripts prontos na pasta do kiosk
+
+O script cria alguns arquivos na pasta `/home/seu-usuario/kiosk/`:
+
 ```bash
-# Verificar se VNC está rodando
-systemctl --user status vino-server
+# Diagnóstico rápido do sistema
+~/kiosk/diagnostico.sh
 
-# Ver porta aberta
-sudo netstat -tulpn | grep 5900
+# Emergência (se precisar reiniciar ou dar F5 manual)
+~/kiosk/emergency.sh restart   # reinicia o navegador
+~/kiosk/emergency.sh refresh   # dá um F5
+~/kiosk/emergency.sh status    # mostra o que está rodando
+~/kiosk/emergency.sh logs      # mostra os últimos logs
 ```
 
-## Estrutura de Logs e Diagnóstico
+---
+
+## 🖥️ Conectando uma TV (duplicação automática)
+
+**Como funciona:**
+1. Conecte a TV via HDMI
+2. O sistema detecta automaticamente
+3. Duplica a tela do monitor principal para a TV
+4. Funciona tanto no boot quanto se conectar depois
+
+**Não precisa fazer nada - já está configurado!**
+
+---
+
+## 🔧 Configurações que o script faz automaticamente
+
+| O que | Como fica |
+|------|-----------|
+| **Login** | Automático (não pede senha) |
+| **Tela** | Nunca bloqueia |
+| **Suspensão** | Desligada (nunca hiberna) |
+| **Mouse** | Some depois de 0.5s parado |
+| **Chromium** | Instalado via Flatpak (sem depender do snap) |
+| **Logs** | Salvos em `/var/log/kiosk_monitor.log` |
+| **Prints de erro** | Salvos em `/var/log/kiosk_screenshots/` |
+
+---
+
+## 📁 Onde ficam os arquivos importantes
 
 ```
-/var/log/
-├── kiosk_monitor.log          # Log principal do sistema
-└── kiosk_screenshots/          # Screenshots de diagnóstico
-    ├── diagnostic_20240101_103022_chromium_unhealthy.png
-    ├── diagnostic_20240101_103022_chromium_unhealthy.log
-    ├── diagnostic_20240101_103055_pre_restart.png
-    └── diagnostic_20240101_103055_pre_restart.log
+/var/log/kiosk_monitor.log           # Log principal (use: tail -f)
+/var/log/kiosk_screenshots/           # Prints de quando deu erro
+/home/seu-usuario/kiosk/              # Scripts do sistema
+/etc/systemd/system/kiosk.service     # Serviço que roda no boot
 ```
 
-## Como o Monitor Inteligente Funciona
+---
 
-O sistema utiliza uma abordagem **reativa** (não proativa) para diagnóstico:
+## 🆘 Problemas comuns (e soluções rápidas)
 
-1. **Verificações leves a cada 30 segundos:**
-   - Processo Chromium existe?
-   - Janela está visível?
-   - Janela aceita foco?
+### "O navegador fechou sozinho"
+```bash
+sudo systemctl restart kiosk.service
+```
 
-2. **Ao detectar falha:**
-   - Captura screenshot do momento
-   - Salva logs do sistema
-   - Tenta refresh suave (F5)
-   - Se persistir, reinicia o Chromium
+### "A tela está preta, mas o sistema parece rodar"
+```bash
+~/kiosk/emergency.sh restart
+```
 
-3. **APÓS 3 falhas consecutivas:**
-   - Reinicialização completa
-   - Novo screenshot de diagnóstico
-   - Limpeza de preferências corrompidas
+### "Quero ver o que aconteceu ontem"
+```bash
+grep "ERRO" /var/log/kiosk_monitor.log
+```
 
-## Resolução de Problemas
+### "Conectei uma TV mas não duplicou"
+```bash
+# O sistema já tenta fazer sozinho, mas pode esperar alguns segundos
+# Se não funcionar, reinicie o serviço de display:
+sudo systemctl restart display-config.service
+```
 
-Para diagnósticos aprofundados, soluções para problemas comuns e guia de troubleshooting avançado, consulte nosso guia detalhado:
+---
 
-**[Guia de Resolução de Problemas](resolucao_de_problemas.md)**
+## 📊 Relatório gerado no final da instalação
 
-O guia inclui:
-- Análise de causas raízes
-- Interpretação de logs e screenshots
-- Problemas comuns e soluções
+Ao terminar a instalação, o script mostra um relatório como este:
+
+```
+📌 SISTEMA OPERACIONAL
+━━━━━━━━━━━━━━━━━━━━━━
+Distribuição: Linux Mint 22.3
+Kernel: 6.14.0-37-generic
+Usuário: tubarao
+
+🖥️  AMBIENTE GRÁFICO
+━━━━━━━━━━━━━━━━━━━━━━
+Login Automático: ✅ Configurado
+Duplicação HDMI: ✅ Ativada
+
+🌐 CHROMIUM
+━━━━━━━━━━━━━━━━━━━━━━
+Versão: 145.0.7632.159
+URL: https://mural.exemplo.com
+
+🔌 ACESSO REMOTO
+━━━━━━━━━━━━━━━━━━━━━━
+SSH: ✅ ssh tubarao@192.168.1.100
+VNC: ✅ Porta 5900
+```
+
+---
+
+## 📚 Quer se aprofundar?
+
+Temos um guia completo de resolução de problemas:
+
+👉 **[Guia de Resolução de Problemas](resolucao_de_problemas.md)**  
+
+Lá você encontra:
+- Análise detalhada de causas de erro
+- Como interpretar os screenshots
 - Configurações avançadas
 - Recuperação de emergência
 
-## O que o Script Configura Automaticamente
+---
 
-1. **Sistema Base**
-   - Atualização de pacotes
-   - Instalação de dependências (unclutter, xdotool, curl, etc.)
-   - Configurações de energia e tela
-   - Remoção de protetor de tela
+## 🎯 Resumo: o que você ganha com isso
 
-2. **Chromium**
-   - Instalação da versão mais recente
-   - Configuração de perfil persistente para PWA
-   - Cache offline habilitado
-   - Parâmetros otimizados para kiosk
-
-3. **Serviço Systemd**
-   - Criação do serviço `/etc/systemd/system/kiosk.service`
-   - Inicialização automática no boot
-   - Política de restart inteligente
-
-4. **Monitor Inteligente**
-   - Script de monitoramento em `/home/usuario/kiosk/kiosk.sh`
-   - Detecção de falhas e recuperação automática
-   - Sistema de logs e screenshots
-
-5. **Acesso Remoto (opcional)**
-   - Servidor VNC (vino)
-   - SSH server
-   - Firewall (UFW) configurado
-
-## Ciclo de Vida do Serviço
-
-```mermaid
-graph TD
-    A[Inicialização] --> B[Chromium em Kiosk Mode]
-    B --> C{Monitor a cada 30s}
-    C -->|OK| B
-    C -->|Falha| D[Tentativa 1: Refresh F5]
-    D -->|Recuperou| B
-    D -->|Falhou| E[Tentativa 2: Refresh]
-    E -->|Recuperou| B
-    E -->|Falhou| F[Tentativa 3: Reinício]
-    F --> B
-```
-
-## Notas Importantes
-
-- **Screenshots** são gerados **APENAS em momentos de falha** para diagnóstico
-- O sistema **NÃO** faz refresh automático periódico (evita flickering)
-- PWAs mantêm cache offline normalmente
-- Máximo de 10 screenshots são mantidos (limpeza automática)
-- Logs são automaticamente truncados quando atingem 1000 linhas
-
-## Contribuição
-
-Para sugestões, problemas ou melhorias, abra uma issue no repositório ou entre em contato com a equipe CTIC.
+✅ **Zero configuração manual** - roda sozinho  
+✅ **Auto-recuperável** - se travar, tenta consertar  
+✅ **Acesso remoto** - SSH e VNC prontos  
+✅ **Diagnóstico fácil** - logs e prints de erro  
+✅ **TV automática** - só conectar o HDMI  
+✅ **Sem surpresas** - nunca desliga ou bloqueia a tela  
 
 ---
+
 **CTIC - Campus Tubarão**  
 Instituto Federal de Santa Catarina
+
+**Dúvidas?** Abra uma issue no GitHub ou fale com a equipe!
+```
