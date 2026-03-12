@@ -553,6 +553,7 @@ log "Executando Chromium..."
 flatpak run org.chromium.Chromium \
     --user-data-dir="$CHROMIUM_USER_DATA" \
     --kiosk \
+    --password-store=basic \
     --no-first-run \
     --no-default-browser-check \
     --disable-sync \
