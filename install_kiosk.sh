@@ -14,6 +14,8 @@
 #   - Suspensão/hibernação desabilitada
 #   - Duplicação automática para TV HDMI (PERSISTENTE)
 #   - Serviço systemd dedicado para displays
+#   - Screenshots SILENCIOSOS (sem piscar a tela)
+#   - Múltiplos métodos de captura (import, xwd, ffmpeg)
 #   - Relatório detalhado ao final
 # Autor: Baseado em scripts validados para Raspberry Pi e Linux Mint
 
@@ -182,7 +184,9 @@ sudo apt-get install -y \
     dbus-x11 \
     lightdm \
     lightdm-settings \
-    x11-xserver-utils
+    x11-xserver-utils \
+    x11-apps \
+    ffmpeg
 
 # Adicionar Flathub
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
@@ -603,15 +607,17 @@ chmod +x "$INSTALL_DIR/run_chromium.sh"
 chown $USERNAME:$USERNAME "$INSTALL_DIR/run_chromium.sh"
 
 # ============================================
-#          SCRIPT DO KIOSK (MONITOR)
+#          SCRIPT DO KIOSK (MONITOR) - VERSÃO COM SCREENSHOTS SILENCIOSOS
 # ============================================
 
-echo -e "${GREEN}[+] Criando script do monitor...${NC}"
+echo -e "${GREEN}[+] Criando script do monitor (com screenshots silenciosos)...${NC}"
 
 cat > "$INSTALL_DIR/kiosk.sh" << 'EOF'
 #!/bin/bash
 
 # Script do Kiosk - Monitor Inteligente
+# VERSÃO COM SCREENSHOTS SILENCIOSOS (sem piscar a tela)
+
 LOG_FILE="/var/log/kiosk_monitor.log"
 SCREENSHOT_DIR="/var/log/kiosk_screenshots"
 KIOSK_URL="$1"
@@ -634,15 +640,68 @@ log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
 }
 
+# Função para capturar screenshot de diagnóstico (SILENCIOSO - sem piscar)
 capture_diagnostic_screenshot() {
     local reason="$1"
     local filename="$SCREENSHOT_DIR/diagnostic_$(date +%Y%m%d_%H%M%S)_${reason}.png"
+    local temp_file="${filename}.tmp"
     
     export DISPLAY=:0
-    if gnome-screenshot -w -f "$filename" 2>/dev/null; then
-        log "Screenshot salvo: $filename"
-        cleanup_screenshots
+    
+    log "Capturando screenshot silencioso (motivo: $reason)..."
+    
+    # MÉTODO 1: import (ImageMagick) - MAIS RECOMENDADO (silencioso)
+    if command -v import &> /dev/null; then
+        if import -window root "$temp_file" 2>/dev/null; then
+            mv "$temp_file" "$filename"
+            log "Screenshot salvo via import: $filename"
+            cleanup_screenshots
+            return 0
+        fi
     fi
+    
+    # MÉTODO 2: xwd + convert (também silencioso)
+    if command -v xwd &> /dev/null; then
+        local xwd_file="${filename}.xwd"
+        if xwd -root -out "$xwd_file" 2>/dev/null; then
+            if command -v convert &> /dev/null; then
+                convert "$xwd_file" "$filename" 2>/dev/null
+                rm -f "$xwd_file"
+            else
+                mv "$xwd_file" "$filename"
+            fi
+            log "Screenshot salvo via xwd: $filename"
+            cleanup_screenshots
+            return 0
+        fi
+    fi
+    
+    # MÉTODO 3: ffmpeg (captura de quadro único - silencioso)
+    if command -v ffmpeg &> /dev/null; then
+        local resolution=$(xdpyinfo 2>/dev/null | grep dimensions | awk '{print $2}')
+        if [ -n "$resolution" ]; then
+            if ffmpeg -f x11grab -video_size "$resolution" -i :0.0 -vframes 1 -y "$temp_file" 2>/dev/null; then
+                mv "$temp_file" "$filename"
+                log "Screenshot salvo via ffmpeg: $filename"
+                cleanup_screenshots
+                return 0
+            fi
+        fi
+    fi
+    
+    # MÉTODO 4: gnome-screenshot (último recurso - pode piscar levemente)
+    if command -v gnome-screenshot &> /dev/null; then
+        # Usar opções silenciosas (sem borda, sem efeito)
+        if gnome-screenshot -f "$temp_file" --border-effect=none 2>/dev/null; then
+            mv "$temp_file" "$filename"
+            log "Screenshot salvo via gnome-screenshot: $filename"
+            cleanup_screenshots
+            return 0
+        fi
+    fi
+    
+    log "ERRO: Nenhum método de captura funcionou"
+    return 1
 }
 
 check_chromium_health() {
@@ -715,6 +774,7 @@ soft_refresh() {
 
 log "=== INICIANDO SISTEMA KIOSK ==="
 log "URL: $KIOSK_URL"
+log "Método de captura: silencioso (import/xwd/ffmpeg)"
 
 export DISPLAY=:0
 xset s off
@@ -858,28 +918,35 @@ fi
 echo -e "\n5. FLATPAK:"
 flatpak list | grep chromium | sed 's/^/   /' || echo "   Chromium não encontrado"
 
-# 6. Configurações de energia
-echo -e "\n6. ENERGIA:"
+# 6. Ferramentas de captura
+echo -e "\n6. FERRAMENTAS DE CAPTURA:"
+echo "   import (ImageMagick): $(command -v import &>/dev/null && echo '✅' || echo '❌')"
+echo "   xwd: $(command -v xwd &>/dev/null && echo '✅' || echo '❌')"
+echo "   ffmpeg: $(command -v ffmpeg &>/dev/null && echo '✅' || echo '❌')"
+echo "   gnome-screenshot: $(command -v gnome-screenshot &>/dev/null && echo '✅' || echo '❌')"
+
+# 7. Configurações de energia
+echo -e "\n7. ENERGIA:"
 echo "   Suspensão: $(systemctl is-enabled sleep.target 2>/dev/null || echo 'desabilitado')"
 
-# 7. Login automático
-echo -e "\n7. LOGIN:"
+# 8. Login automático
+echo -e "\n8. LOGIN:"
 if [ -f /etc/lightdm/lightdm.conf.d/50-kiosk.conf ]; then
     echo "   ✅ Login automático configurado"
 else
     echo "   ❌ Login automático não configurado"
 fi
 
-# 8. Configurações pós-reboot
-echo -e "\n8. PÓS-REBOOT:"
+# 9. Configurações pós-reboot
+echo -e "\n9. PÓS-REBOOT:"
 if [ -f "$HOME/.kiosk_configured" ]; then
     echo "   ✅ Configurações pós-reboot já aplicadas"
 else
     echo "   ⚠️  Configurações pós-reboot pendentes"
 fi
 
-# 9. Serviço de display
-echo -e "\n9. SERVIÇO DE DISPLAY:"
+# 10. Serviço de display
+echo -e "\n10. SERVIÇO DE DISPLAY:"
 if systemctl is-enabled display-config.service &>/dev/null; then
     echo "   ✅ Serviço de display habilitado (persistente)"
     echo "   Última configuração: $(tail -1 /var/log/kiosk_display.log 2>/dev/null || echo 'n/a')"
@@ -887,8 +954,8 @@ else
     echo "   ❌ Serviço de display não configurado"
 fi
 
-# 10. Logs recentes
-echo -e "\n10. ÚLTIMOS LOGS:"
+# 11. Logs recentes
+echo -e "\n11. ÚLTIMOS LOGS:"
 tail -10 /var/log/kiosk_monitor.log 2>/dev/null | sed 's/^/   /' || echo "   Log não encontrado"
 
 echo -e "\n========================================="
@@ -1103,6 +1170,14 @@ echo -e "Suspensão: ${GREEN}Desabilitada (sistema)${NC}"
 echo -e "Hibernação: ${GREEN}Desabilitada${NC}"
 echo ""
 
+# Screenshots
+echo -e "${BLUE}📸 SCREENSHOTS DE DIAGNÓSTICO${NC}"
+echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "Modo: ${GREEN}SILENCIOSO (sem piscar a tela)${NC}"
+echo -e "Métodos disponíveis: import (ImageMagick), xwd, ffmpeg"
+echo -e "Local: /var/log/kiosk_screenshots/"
+echo ""
+
 # Acesso Remoto
 echo -e "${BLUE}🔌 ACESSO REMOTO${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1133,7 +1208,8 @@ echo -e "2. O login automático será ativado"
 echo -e "3. O serviço de display configurará a TV HDMI (se conectada)"
 echo -e "4. Configurações de tela serão aplicadas"
 echo -e "5. O Chromium iniciará em modo kiosk"
-echo -e "6. O VNC será configurado (se selecionado)"
+echo -e "6. Screenshots de diagnóstico serão SILENCIOSOS"
+echo -e "7. O VNC será configurado (se selecionado)"
 echo ""
 
 echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
