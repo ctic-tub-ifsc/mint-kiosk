@@ -17,8 +17,6 @@
 #   - Screenshots SILENCIOSOS (sem piscar a tela)
 #   - Múltiplos métodos de captura (import, xwd, ffmpeg)
 #   - Configurações de energia para bateria (nunca bloqueia, desliga em bateria crítica)
-#   - Script de suspensão customizado para evitar bloqueio
-#   - Inibição de suspensão via gnome-session-inhibit
 #   - Relatório detalhado ao final
 # Autor: Baseado em scripts validados para Raspberry Pi e Linux Mint
 
@@ -190,8 +188,7 @@ sudo apt-get install -y \
     x11-xserver-utils \
     x11-apps \
     ffmpeg \
-    upower \
-    gnome-session-bin
+    upower
 
 # Adicionar Flathub
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
@@ -254,7 +251,7 @@ cat > "$INSTALL_DIR/pos_reboot.sh" << 'EOF'
 
 # Script executado após o primeiro reboot
 # Configura todas as preferências do usuário que dependem do ambiente gráfico
-# VERSÃO COM CONFIGURAÇÕES DE ENERGIA AVANÇADAS
+# VERSÃO COM CONFIGURAÇÕES DE ENERGIA PARA BATERIA
 
 LOG_FILE="/home/$(whoami)/kiosk/pos_reboot.log"
 USERNAME="$(whoami)"
@@ -269,11 +266,9 @@ sleep 15
 export DISPLAY=:0
 export XAUTHORITY="/home/$USERNAME/.Xauthority"
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
 
 echo "$(date) - DISPLAY=$DISPLAY"
 echo "$(date) - XAUTHORITY=$XAUTHORITY"
-echo "$(date) - XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
 
 # Verificar se o X11 está acessível
 if ! xdpyinfo &>/dev/null; then
@@ -309,7 +304,7 @@ echo "$(date) - Configurações básicas aplicadas"
 #          CONFIGURAÇÕES DE ENERGIA AVANÇADAS
 # ============================================
 
-echo "$(date) - Aplicando configurações avançadas de energia..."
+echo "$(date) - Aplicando configurações de energia para modo kiosk..."
 
 # Desabilitar suspensão por inatividade (AC e bateria)
 gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing' 2>/dev/null
@@ -325,11 +320,6 @@ gsettings set org.gnome.settings-daemon.plugins.power sleep-display-battery 0 2>
 
 # Garantir que bloqueio de tela esteja desabilitado (reforço)
 gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null
-gsettings set org.cinnamon.desktop.lockdown disable-lock-screen true 2>/dev/null
-gsettings set org.cinnamon.desktop.screensaver lock-enabled false 2>/dev/null
-
-# Desabilitar bloqueio ao suspender (Cinnamon)
-gsettings set org.cinnamon.settings-daemon.plugins.power lock-on-suspend false 2>/dev/null
 
 # Configurar ação quando a tampa for fechada (ignorar)
 gsettings set org.gnome.settings-daemon.plugins.power lid-close-ac-action 'nothing' 2>/dev/null
@@ -394,25 +384,6 @@ sudo systemctl restart upower 2>/dev/null
 echo "$(date) - Configurações de bateria crítica aplicadas: DESLIGAR em 2%"
 
 # ============================================
-#          CONFIGURAÇÕES ADICIONAIS DE LOGIND
-# ============================================
-
-echo "$(date) - Configurando logind.conf..."
-
-sudo tee /etc/systemd/logind.conf.d/99-kiosk.conf > /dev/null << 'LOGIND'
-[Login]
-HandleLidSwitch=ignore
-HandleLidSwitchExternalPower=ignore
-HandleLidSwitchDocked=ignore
-IdleAction=ignore
-LockOnSuspend=no
-LOGIND
-
-sudo systemctl restart systemd-logind
-
-echo "$(date) - Configurações de logind aplicadas"
-
-# ============================================
 #          VERIFICAÇÃO DAS CONFIGURAÇÕES
 # ============================================
 
@@ -422,9 +393,6 @@ echo "$(date) - Verificando configurações aplicadas:"
 echo "Configurações de suspensão por inatividade:"
 gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type | sed 's/^/   /'
 gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type | sed 's/^/   /'
-
-echo "Bloqueio de tela ao suspender:"
-gsettings get org.cinnamon.settings-daemon.plugins.power lock-on-suspend | sed 's/^/   /'
 
 echo "Ação em bateria crítica:"
 grep CriticalPowerAction /etc/UPower/UPower.conf | sed 's/^/   /'
@@ -469,71 +437,10 @@ chmod +x "$USER_HOME/.config/autostart/kiosk-pos-reboot.desktop"
 echo -e "${GREEN}✓ Configurações pós-reboot agendadas${NC}"
 
 # ============================================
-#          SCRIPT DE SUSPENSÃO CUSTOMIZADO
-# ============================================
-
-echo -e "${GREEN}[7/8] Criando script de suspensão customizado...${NC}"
-
-sudo tee /usr/lib/systemd/system-sleep/kiosk-nolock.sh > /dev/null << 'EOF'
-#!/bin/bash
-
-# Script executado pelo systemd antes/depois da suspensão
-# Desabilita o bloqueio de tela durante a suspensão
-
-LOG_FILE="/var/log/kiosk-suspend.log"
-USERNAME=$(cat /etc/lightdm/lightdm.conf.d/50-kiosk.conf 2>/dev/null | grep autologin-user | cut -d= -f2 | xargs)
-
-# Se não encontrar no lightdm, tenta pegar o usuário atual
-if [ -z "$USERNAME" ]; then
-    USERNAME=$(logname 2>/dev/null || echo "tubarao")
-fi
-
-# Obter UID do usuário
-USER_UID=$(id -u $USERNAME 2>/dev/null || echo "1000")
-
-case $1 in
-    pre)
-        echo "$(date) - Sistema indo suspender, desabilitando bloqueio..." >> $LOG_FILE
-        
-        # Desabilitar bloqueio antes de suspender
-        if [ -n "$USERNAME" ]; then
-            sudo -u $USERNAME DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$USER_UID/bus \
-                gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null
-            sudo -u $USERNAME DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$USER_UID/bus \
-                gsettings set org.cinnamon.desktop.lockdown disable-lock-screen true 2>/dev/null
-            sudo -u $USERNAME DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$USER_UID/bus \
-                gsettings set org.cinnamon.settings-daemon.plugins.power lock-on-suspend false 2>/dev/null
-        fi
-        
-        # Também desabilitar via dconf direto
-        sudo -u $USERNAME DISPLAY=:0 dconf write /org/gnome/desktop/screensaver/lock-enabled false 2>/dev/null
-        sudo -u $USERNAME DISPLAY=:0 dconf write /org/cinnamon/desktop/lockdown/disable-lock-screen true 2>/dev/null
-        ;;
-    post)
-        echo "$(date) - Sistema acordou, mantendo bloqueio desabilitado..." >> $LOG_FILE
-        # Manter desabilitado após acordar também
-        if [ -n "$USERNAME" ]; then
-            sudo -u $USERNAME DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$USER_UID/bus \
-                gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null
-            sudo -u $USERNAME DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$USER_UID/bus \
-                gsettings set org.cinnamon.settings-daemon.plugins.power lock-on-suspend false 2>/dev/null
-        fi
-        ;;
-esac
-
-exit 0
-EOF
-
-# Tornar executável
-sudo chmod +x /usr/lib/systemd/system-sleep/kiosk-nolock.sh
-
-echo -e "${GREEN}✓ Script de suspensão customizado criado${NC}"
-
-# ============================================
 #          SERVIÇO DE CONFIGURAÇÃO DE DISPLAY (PERSISTENTE)
 # ============================================
 
-echo -e "${GREEN}[8/8] Criando serviço persistente para configuração de displays...${NC}"
+echo -e "${GREEN}[7/8] Criando serviço persistente para configuração de displays...${NC}"
 
 sudo tee /etc/systemd/system/display-config.service > /dev/null << EOF
 [Unit]
@@ -628,7 +535,7 @@ echo -e "${GREEN}✓ Serviço de configuração de displays criado e habilitado$
 #          SCRIPT DE RECONFIGURAÇÃO MANUAL
 # ============================================
 
-echo -e "${GREEN}[+] Criando script para reconfigurar displays manualmente...${NC}"
+echo -e "${GREEN}[8/8] Criando script para reconfigurar displays manualmente...${NC}"
 
 cat > "$INSTALL_DIR/reconfigurar_display.sh" << 'EOF'
 #!/bin/bash
@@ -1059,7 +966,7 @@ chmod +x "$INSTALL_DIR/emergency.sh"
 chown $USERNAME:$USERNAME "$INSTALL_DIR/emergency.sh"
 
 # ============================================
-#          SCRIPT DE DIAGNÓSTICO (ATUALIZADO)
+#          SCRIPT DE DIAGNÓSTICO
 # ============================================
 
 echo -e "${GREEN}[+] Criando script de diagnóstico...${NC}"
@@ -1121,7 +1028,6 @@ echo "   gnome-screenshot: $(command -v gnome-screenshot &>/dev/null && echo '�
 echo -e "\n7. CONFIGURAÇÕES DE ENERGIA:"
 echo "   Suspensão por inatividade (AC): $(gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 2>/dev/null || echo 'n/a')"
 echo "   Suspensão por inatividade (bateria): $(gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 2>/dev/null || echo 'n/a')"
-echo "   Bloqueio ao suspender: $(gsettings get org.cinnamon.settings-daemon.plugins.power lock-on-suspend 2>/dev/null || echo 'n/a')"
 echo "   Ação bateria crítica: $(grep CriticalPowerAction /etc/UPower/UPower.conf 2>/dev/null | cut -d= -f2 || echo 'n/a')"
 
 # 8. Login automático
@@ -1149,16 +1055,8 @@ else
     echo "   ❌ Serviço de display não configurado"
 fi
 
-# 11. Script de suspensão
-echo -e "\n11. SCRIPT DE SUSPENSÃO:"
-if [ -f /usr/lib/systemd/system-sleep/kiosk-nolock.sh ]; then
-    echo "   ✅ Script de suspensão customizado instalado"
-else
-    echo "   ❌ Script de suspensão não encontrado"
-fi
-
-# 12. Logs recentes
-echo -e "\n12. ÚLTIMOS LOGS:"
+# 11. Logs recentes
+echo -e "\n11. ÚLTIMOS LOGS:"
 tail -10 /var/log/kiosk_monitor.log 2>/dev/null | sed 's/^/   /' || echo "   Log não encontrado"
 
 echo -e "\n========================================="
@@ -1168,10 +1066,10 @@ chmod +x "$INSTALL_DIR/diagnostico.sh"
 chown $USERNAME:$USERNAME "$INSTALL_DIR/diagnostico.sh"
 
 # ============================================
-#          SERVIÇO SYSTEMD (KIOSK) - VERSÃO COM INIBIÇÃO
+#          SERVIÇO SYSTEMD (KIOSK)
 # ============================================
 
-echo -e "${GREEN}[+] Criando serviço systemd para o kiosk com inibição de suspensão...${NC}"
+echo -e "${GREEN}[+] Criando serviço systemd para o kiosk...${NC}"
 
 sudo tee /etc/systemd/system/kiosk.service > /dev/null << EOF
 [Unit]
@@ -1186,23 +1084,20 @@ User=$USERNAME
 Group=$USERNAME
 WorkingDirectory=$USER_HOME
 
-# Ambiente completo
+# Ambiente completo e forçado
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=$USER_HOME/.Xauthority
 Environment=XDG_RUNTIME_DIR=/run/user/$(id -u $USERNAME)
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
 Environment=HOME=$USER_HOME
+Environment=USER=$USERNAME
+Environment=LOGNAME=$USERNAME
 
 # Garantir que o X11 esteja pronto
 ExecStartPre=/bin/sleep 5
 ExecStartPre=/bin/bash -c 'while ! xdpyinfo -display :0 >/dev/null 2>&1; do sleep 1; done'
 
-# Executar o monitor com inibição de suspensão e bloqueio
-# --inhibit=idle:suspend:logout:switch:shutdown:reboot inibe tudo
-ExecStart=/usr/bin/gnome-session-inhibit \
-    --inhibit=idle:suspend \
-    --reason="Kiosk em execução" \
-    /bin/bash $INSTALL_DIR/kiosk.sh "$KIOSK_URL"
+# Executar o monitor
+ExecStart=/bin/bash $INSTALL_DIR/kiosk.sh "$KIOSK_URL"
 
 # Políticas de restart
 Restart=always
@@ -1303,15 +1198,12 @@ echo -e "${GREEN}[+] Ajustando permissões de log...${NC}"
 sudo touch /var/log/kiosk_monitor.log
 sudo touch /var/log/kiosk_emergency.log
 sudo touch /var/log/kiosk_display.log
-sudo touch /var/log/kiosk-suspend.log
 sudo chown $USERNAME:$USERNAME /var/log/kiosk_monitor.log
 sudo chown $USERNAME:$USERNAME /var/log/kiosk_emergency.log
 sudo chown $USERNAME:$USERNAME /var/log/kiosk_display.log
-sudo chown $USERNAME:$USERNAME /var/log/kiosk-suspend.log
 sudo chmod 644 /var/log/kiosk_monitor.log
 sudo chmod 644 /var/log/kiosk_emergency.log
 sudo chmod 644 /var/log/kiosk_display.log
-sudo chmod 644 /var/log/kiosk-suspend.log
 
 sudo mkdir -p /var/log/kiosk_screenshots
 sudo chown -R $USERNAME:$USERNAME /var/log/kiosk_screenshots
@@ -1375,11 +1267,9 @@ echo ""
 echo -e "${BLUE}⚡ CONFIGURAÇÕES DE ENERGIA${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "Bloqueio de tela: ${GREEN}Desabilitado permanentemente${NC}"
-echo -e "Bloqueio ao suspender: ${GREEN}Desabilitado via script customizado${NC}"
 echo -e "Suspensão por inatividade: ${GREEN}Desabilitada (AC e bateria)${NC}"
 echo -e "Ação em bateria crítica: ${GREEN}DESLIGAR (em 2%)${NC}"
 echo -e "Fechar tampa: ${GREEN}Ignorado (não suspende)${NC}"
-echo -e "Inibição durante kiosk: ${GREEN}Ativa (gnome-session-inhibit)${NC}"
 echo ""
 
 # Screenshots
@@ -1410,7 +1300,6 @@ echo -e "  • Emergência: ./emergency.sh {restart|refresh|status|logs|tv}"
 echo -e "  • Reconfigurar TV: ./reconfigurar_display.sh"
 echo -e "  • Log principal: tail -f /var/log/kiosk_monitor.log"
 echo -e "  • Log do display: tail -f /var/log/kiosk_display.log"
-echo -e "  • Log de suspensão: tail -f /var/log/kiosk-suspend.log"
 echo ""
 
 # Próximos passos
@@ -1419,11 +1308,10 @@ echo -e "━━━━━━━━━━━━━━━━━━━━━━━�
 echo -e "1. O sistema reiniciará automaticamente"
 echo -e "2. O login automático será ativado"
 echo -e "3. O serviço de display configurará a TV HDMI (se conectada)"
-echo -e "4. Configurações de energia avançadas serão aplicadas:"
-echo -e "   • Tela NUNCA será bloqueada (mesmo durante suspensão)"
-echo -e "   • Sistema DESLIGARÁ em bateria crítica (não hiberna)"
-echo -e "   • Script customizado impede bloqueio ao suspender"
-echo -e "5. O Chromium iniciará em modo kiosk com inibição de suspensão"
+echo -e "4. Configurações de energia serão aplicadas:"
+echo -e "   • Tela nunca será bloqueada"
+echo -e "   • Sistema desligará em bateria crítica (não hiberna)"
+echo -e "5. O Chromium iniciará em modo kiosk"
 echo -e "6. Screenshots de diagnóstico serão SILENCIOSOS"
 echo -e "7. O VNC será configurado (se selecionado)"
 echo ""
