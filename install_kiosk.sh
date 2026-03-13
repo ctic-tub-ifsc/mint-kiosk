@@ -16,6 +16,7 @@
 #   - Serviço systemd dedicado para displays
 #   - Screenshots SILENCIOSOS (sem piscar a tela)
 #   - Múltiplos métodos de captura (import, xwd, ffmpeg)
+#   - Configurações de energia para bateria (nunca bloqueia, desliga em bateria crítica)
 #   - Relatório detalhado ao final
 # Autor: Baseado em scripts validados para Raspberry Pi e Linux Mint
 
@@ -186,7 +187,8 @@ sudo apt-get install -y \
     lightdm-settings \
     x11-xserver-utils \
     x11-apps \
-    ffmpeg
+    ffmpeg \
+    upower
 
 # Adicionar Flathub
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
@@ -237,7 +239,7 @@ sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.ta
 echo -e "${GREEN}✓ Suspensão do sistema desabilitada${NC}"
 
 # ============================================
-#          SCRIPT DE CONFIGURAÇÃO PÓS-REBOOT
+#          SCRIPT DE CONFIGURAÇÃO PÓS-REBOOT (ATUALIZADO)
 # ============================================
 
 echo -e "${GREEN}[5/8] Criando script de configuração pós-reboot...${NC}"
@@ -249,6 +251,7 @@ cat > "$INSTALL_DIR/pos_reboot.sh" << 'EOF'
 
 # Script executado após o primeiro reboot
 # Configura todas as preferências do usuário que dependem do ambiente gráfico
+# VERSÃO COM CONFIGURAÇÕES DE ENERGIA PARA BATERIA
 
 LOG_FILE="/home/$(whoami)/kiosk/pos_reboot.log"
 USERNAME="$(whoami)"
@@ -279,6 +282,8 @@ echo "$(date) - X11 acessível, aplicando configurações..."
 #          CONFIGURAÇÕES DO USUÁRIO
 # ============================================
 
+echo "$(date) - Aplicando configurações básicas do usuário..."
+
 # Desabilitar protetor de tela e bloqueio
 gsettings set org.gnome.desktop.screensaver idle-activation-enabled false 2>/dev/null
 gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null
@@ -287,16 +292,110 @@ gsettings set org.gnome.desktop.session idle-delay 0 2>/dev/null
 gsettings set org.cinnamon.desktop.lockdown disable-lock-screen true 2>/dev/null
 gsettings set org.cinnamon.desktop.screensaver lock-enabled false 2>/dev/null
 
-# Desabilitar suspensão
-gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing' 2>/dev/null
-gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 'nothing' 2>/dev/null
-gsettings set org.gnome.settings-daemon.plugins.power idle-dim false 2>/dev/null
-
 # Desabilitar animações
 gsettings set org.gnome.desktop.interface enable-animations false 2>/dev/null
 
 # Desabilitar notificações
 gsettings set org.gnome.desktop.notifications show-banners false 2>/dev/null
+
+echo "$(date) - Configurações básicas aplicadas"
+
+# ============================================
+#          CONFIGURAÇÕES DE ENERGIA AVANÇADAS
+# ============================================
+
+echo "$(date) - Aplicando configurações de energia para modo kiosk..."
+
+# Desabilitar suspensão por inatividade (AC e bateria)
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing' 2>/dev/null
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 'nothing' 2>/dev/null
+
+# Desabilitar timeouts de suspensão (0 = nunca)
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-timeout 0 2>/dev/null
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-timeout 0 2>/dev/null
+
+# Desabilitar desligar tela por inatividade
+gsettings set org.gnome.settings-daemon.plugins.power sleep-display-ac 0 2>/dev/null
+gsettings set org.gnome.settings-daemon.plugins.power sleep-display-battery 0 2>/dev/null
+
+# Garantir que bloqueio de tela esteja desabilitado (reforço)
+gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null
+
+# Configurar ação quando a tampa for fechada (ignorar)
+gsettings set org.gnome.settings-daemon.plugins.power lid-close-ac-action 'nothing' 2>/dev/null
+gsettings set org.gnome.settings-daemon.plugins.power lid-close-battery-action 'nothing' 2>/dev/null
+
+# Desabilitar redução de brilho da tela quando inativo
+gsettings set org.gnome.settings-daemon.plugins.power idle-dim false 2>/dev/null
+
+echo "$(date) - Configurações de energia do usuário aplicadas"
+
+# ============================================
+#          CONFIGURAÇÃO DE BATERIA CRÍTICA (DESLIGAR)
+# ============================================
+
+echo "$(date) - Configurando ação para bateria crítica: DESLIGAR"
+
+# Fazer backup do arquivo original
+sudo cp /etc/UPower/UPower.conf /etc/UPower/UPower.conf.backup 2>/dev/null
+
+# Editar configuração do UPower para desligar em vez de hibernar
+sudo tee /etc/UPower/UPower.conf > /dev/null << 'UPOW'
+# Configuração UPower para Kiosk - Modificado para DESLIGAR em bateria crítica
+
+[UPower]
+# Enable battery polling
+PollOnBattery=true
+
+# When true, don't display any power icons
+NoDisplayPowerIcons=false
+
+# When true, don't do any inhibit requests
+NoDoInhibitRequests=false
+
+# When true, don't check battery levels
+NoCheckBatteryLevels=false
+
+# The action to take when "TimeAction" or "PercentageAction" has been
+# reached for the batteries (UPS or laptop batteries) supplying the computer
+# Possible values: PowerOff, Hibernate, HybridSleep
+CriticalPowerAction=PowerOff
+
+# Percentage for critical action
+PercentageLow=10
+PercentageCritical=3
+PercentageAction=2
+
+# Time for critical action (in seconds)
+TimeLow=300
+TimeCritical=120
+TimeAction=60
+
+# Use percentage for policy
+UsePercentageForPolicy=true
+UPOW
+
+# Garantir que o systemd não mascare o desligamento
+sudo systemctl unmask poweroff.target 2>/dev/null
+
+# Reiniciar serviço UPower para aplicar mudanças
+sudo systemctl restart upower 2>/dev/null
+
+echo "$(date) - Configurações de bateria crítica aplicadas: DESLIGAR em 2%"
+
+# ============================================
+#          VERIFICAÇÃO DAS CONFIGURAÇÕES
+# ============================================
+
+echo "$(date) - Verificando configurações aplicadas:"
+
+# Mostrar configurações de energia atuais
+echo "Configurações de suspensão por inatividade:"
+gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type | sed 's/^/   /'
+gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type | sed 's/^/   /'
+
+echo "Ação em bateria crítica:"
+grep CriticalPowerAction /etc/UPower/UPower.conf | sed 's/^/   /'
 
 echo "$(date) - Configurações do usuário aplicadas com sucesso"
 
@@ -926,8 +1025,10 @@ echo "   ffmpeg: $(command -v ffmpeg &>/dev/null && echo '✅' || echo '❌')"
 echo "   gnome-screenshot: $(command -v gnome-screenshot &>/dev/null && echo '✅' || echo '❌')"
 
 # 7. Configurações de energia
-echo -e "\n7. ENERGIA:"
-echo "   Suspensão: $(systemctl is-enabled sleep.target 2>/dev/null || echo 'desabilitado')"
+echo -e "\n7. CONFIGURAÇÕES DE ENERGIA:"
+echo "   Suspensão por inatividade (AC): $(gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 2>/dev/null || echo 'n/a')"
+echo "   Suspensão por inatividade (bateria): $(gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 2>/dev/null || echo 'n/a')"
+echo "   Ação bateria crítica: $(grep CriticalPowerAction /etc/UPower/UPower.conf 2>/dev/null | cut -d= -f2 || echo 'n/a')"
 
 # 8. Login automático
 echo -e "\n8. LOGIN:"
@@ -1165,9 +1266,10 @@ echo ""
 # Configurações de Energia
 echo -e "${BLUE}⚡ CONFIGURAÇÕES DE ENERGIA${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "Bloqueio de tela: ${GREEN}Será desabilitado no primeiro login${NC}"
-echo -e "Suspensão: ${GREEN}Desabilitada (sistema)${NC}"
-echo -e "Hibernação: ${GREEN}Desabilitada${NC}"
+echo -e "Bloqueio de tela: ${GREEN}Desabilitado permanentemente${NC}"
+echo -e "Suspensão por inatividade: ${GREEN}Desabilitada (AC e bateria)${NC}"
+echo -e "Ação em bateria crítica: ${GREEN}DESLIGAR (em 2%)${NC}"
+echo -e "Fechar tampa: ${GREEN}Ignorado (não suspende)${NC}"
 echo ""
 
 # Screenshots
@@ -1206,7 +1308,9 @@ echo -e "━━━━━━━━━━━━━━━━━━━━━━━�
 echo -e "1. O sistema reiniciará automaticamente"
 echo -e "2. O login automático será ativado"
 echo -e "3. O serviço de display configurará a TV HDMI (se conectada)"
-echo -e "4. Configurações de tela serão aplicadas"
+echo -e "4. Configurações de energia serão aplicadas:"
+echo -e "   • Tela nunca será bloqueada"
+echo -e "   • Sistema desligará em bateria crítica (não hiberna)"
 echo -e "5. O Chromium iniciará em modo kiosk"
 echo -e "6. Screenshots de diagnóstico serão SILENCIOSOS"
 echo -e "7. O VNC será configurado (se selecionado)"
