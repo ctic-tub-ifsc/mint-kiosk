@@ -16,6 +16,7 @@
 #   - Serviço systemd dedicado para displays
 #   - Screenshots SILENCIOSOS (sem piscar a tela)
 #   - Múltiplos métodos de captura (import, xwd, ffmpeg)
+#   - Configurações para notebook (bateria crítica, wake-on-AC)
 #   - Relatório detalhado ao final
 # Autor: Baseado em scripts validados para Raspberry Pi e Linux Mint
 
@@ -186,7 +187,9 @@ sudo apt-get install -y \
     lightdm-settings \
     x11-xserver-utils \
     x11-apps \
-    ffmpeg
+    ffmpeg \
+    upower \
+    acpi
 
 # Adicionar Flathub
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
@@ -237,10 +240,59 @@ sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.ta
 echo -e "${GREEN}✓ Suspensão do sistema desabilitada${NC}"
 
 # ============================================
+#          CONFIGURAÇÃO DE BATERIA CRÍTICA (UPOWER)
+# ============================================
+
+echo -e "${GREEN}[5/8] Configurando ação para bateria crítica: DESLIGAR${NC}"
+
+# Fazer backup do arquivo original
+sudo cp /etc/UPower/UPower.conf /etc/UPower/UPower.conf.backup 2>/dev/null
+
+# Configurar UPower para desligar em bateria crítica
+sudo tee /etc/UPower/UPower.conf > /dev/null << 'UPOW'
+# Configuração UPower para Kiosk - DESLIGAR em bateria crítica
+
+[UPower]
+# Enable battery polling
+PollOnBattery=true
+
+# When true, don't display any power icons
+NoDisplayPowerIcons=false
+
+# When true, don't do any inhibit requests
+NoDoInhibitRequests=false
+
+# When true, don't check battery levels
+NoCheckBatteryLevels=false
+
+# The action to take when "TimeAction" or "PercentageAction" has been
+# reached for the batteries
+CriticalPowerAction=PowerOff
+
+# Percentage for critical action
+PercentageLow=10
+PercentageCritical=3
+PercentageAction=2
+
+# Time for critical action (in seconds)
+TimeLow=300
+TimeCritical=120
+TimeAction=60
+
+# Use percentage for policy
+UsePercentageForPolicy=true
+UPOW
+
+# Reiniciar serviço UPower
+sudo systemctl restart upower 2>/dev/null
+
+echo -e "${GREEN}✓ Configuração de bateria crítica aplicada: DESLIGAR em 2%${NC}"
+
+# ============================================
 #          SCRIPT DE CONFIGURAÇÃO PÓS-REBOOT
 # ============================================
 
-echo -e "${GREEN}[5/8] Criando script de configuração pós-reboot...${NC}"
+echo -e "${GREEN}[6/8] Criando script de configuração pós-reboot...${NC}"
 
 mkdir -p "$INSTALL_DIR"
 
@@ -317,7 +369,7 @@ chown $USERNAME:$USERNAME "$INSTALL_DIR/pos_reboot.sh"
 #          CRIAR ENTRADA DE AUTOSTART
 # ============================================
 
-echo -e "${GREEN}[6/8] Criando entrada de autostart para configuração pós-reboot...${NC}"
+echo -e "${GREEN}[7/8] Criando entrada de autostart para configuração pós-reboot...${NC}"
 
 mkdir -p "$USER_HOME/.config/autostart"
 
@@ -338,10 +390,241 @@ chmod +x "$USER_HOME/.config/autostart/kiosk-pos-reboot.desktop"
 echo -e "${GREEN}✓ Configurações pós-reboot agendadas${NC}"
 
 # ============================================
+#          SCRIPT DE DESLIGAMENTO LIMPO
+# ============================================
+
+echo -e "${GREEN}[8/8] Criando script de desligamento limpo...${NC}"
+
+sudo tee "$INSTALL_DIR/graceful_shutdown.sh" > /dev/null << 'EOF'
+#!/bin/bash
+
+# Script para desligamento limpo quando bateria está crítica
+LOG_FILE="/var/log/kiosk_graceful_shutdown.log"
+USERNAME=$(whoami)
+
+log() {
+    echo "$(date) - $1" | tee -a "$LOG_FILE"
+}
+
+log "🚨 BATERIA CRÍTICA - Iniciando desligamento limpo"
+
+# Tentar fechar o Chromium graciosamente
+log "Encerrando Chromium..."
+pkill -TERM -f chromium
+sleep 3
+
+# Garantir que todos os processos do usuário sejam encerrados
+log "Encerrando processos do usuário..."
+pkill -TERM -u "$USERNAME"
+sleep 2
+
+# Sincronizar discos
+log "Sincronizando discos..."
+sync
+
+# Desligar
+log "Desligando sistema..."
+sudo shutdown -h now
+EOF
+
+sudo chmod +x "$INSTALL_DIR/graceful_shutdown.sh"
+sudo chown root:root "$INSTALL_DIR/graceful_shutdown.sh"
+
+echo -e "${GREEN}✓ Script de desligamento limpo criado${NC}"
+
+# ============================================
+#          CONFIGURAÇÃO DE WAKE-ON-AC (NOTEBOOK)
+# ============================================
+
+echo -e "${GREEN}[+] Configurando wake-on-AC para notebook...${NC}"
+
+cat > "$INSTALL_DIR/configure_ac_wake.sh" << 'EOF'
+#!/bin/bash
+
+# Script para configurar wake-on-AC em notebooks
+LOG_FILE="/var/log/kiosk_ac_wake.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "$(date) - Verificando suporte a wake-on-AC"
+
+# Verificar se é notebook
+if [ ! -d /proc/acpi/button/lid ]; then
+    echo "Este não parece ser um notebook (sem detecção de tampa)"
+    exit 0
+fi
+
+echo "Notebook detectado - verificando suporte a wake-on-AC..."
+
+# Verificar via /proc/acpi/wakeup
+if [ -f /proc/acpi/wakeup ]; then
+    echo "Dispositivos com wakeup suportado:"
+    grep -E "AC|LID|PBTN" /proc/acpi/wakeup 2>/dev/null | sed 's/^/   /'
+fi
+
+# Criar serviço de monitoramento AC
+sudo tee /etc/systemd/system/monitor-ac.service > /dev/null << 'SVC'
+[Unit]
+Description=Monitor de energia AC para wake-on-connect
+After=multi-user.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/monitor_ac.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+SVC
+
+# Criar script de monitoramento
+sudo tee /usr/local/bin/monitor_ac.sh > /dev/null << 'MON'
+#!/bin/bash
+
+LOG_FILE="/var/log/monitor_ac.log"
+AC_STATUS=""
+
+while true; do
+    if [ -f /sys/class/power_supply/AC/online ]; then
+        NEW_STATUS=$(cat /sys/class/power_supply/AC/online 2>/dev/null)
+        
+        if [ "$NEW_STATUS" != "$AC_STATUS" ]; then
+            echo "$(date) - Mudança no status AC: $AC_STATUS -> $NEW_STATUS" >> $LOG_FILE
+            AC_STATUS=$NEW_STATUS
+            
+            if [ "$AC_STATUS" = "1" ]; then
+                echo "$(date) - Energia AC conectada" >> $LOG_FILE
+            fi
+        fi
+    fi
+    sleep 5
+done
+MON
+
+sudo chmod +x /usr/local/bin/monitor_ac.sh
+sudo systemctl enable monitor-ac.service
+sudo systemctl start monitor-ac.service
+
+echo "✅ Serviço de monitoramento AC criado"
+
+# Criar instruções para BIOS
+cat > "/home/$(logname)/Desktop/configurar_bios.txt" << 'BIOS'
+=====================================================================
+INSTRUÇÕES PARA CONFIGURAR LIGAÇÃO AUTOMÁTICA NA BIOS
+=====================================================================
+
+Para que o notebook ligue automaticamente quando a energia AC for
+conectada (após desligamento por bateria crítica), é necessário
+configurar a BIOS/UEFI:
+
+1. Reinicie o notebook e pressione F2, F10, DEL ou ESC (dependendo do modelo)
+   para entrar na configuração da BIOS.
+
+2. Procure por opções como:
+   - "Power on AC Restore"
+   - "Wake on AC"
+   - "Auto Power On"
+   - "Restore AC Power Loss"
+   - "After Power Loss" → "Power On"
+
+3. Ative a opção e salve as configurações (F10).
+
+=====================================================================
+Fabricantes comuns e teclas de acesso:
+- Dell: F2
+- Lenovo: F1 ou F2 (ThinkPad) / Novo button (IdeaPad)
+- HP: ESC ou F10
+- Acer: F2
+- Asus: F2 ou DEL
+- Samsung: F2
+=====================================================================
+BIOS
+
+chown $(logname):$(logname) "/home/$(logname)/Desktop/configurar_bios.txt"
+echo "✅ Instruções salvas em ~/Desktop/configurar_bios.txt"
+EOF
+
+chmod +x "$INSTALL_DIR/configure_ac_wake.sh"
+bash "$INSTALL_DIR/configure_ac_wake.sh"
+
+echo -e "${GREEN}✓ Configuração de wake-on-AC aplicada${NC}"
+
+# ============================================
+#          SCRIPT DE DIAGNÓSTICO DE HARDWARE
+# ============================================
+
+echo -e "${GREEN}[+] Criando script de diagnóstico de hardware...${NC}"
+
+cat > "$INSTALL_DIR/diagnostico_hardware.sh" << 'EOF'
+#!/bin/bash
+
+echo "========================================="
+echo "🔋 DIAGNÓSTICO DE HARDWARE - NOTEBOOK"
+echo "========================================="
+
+# 1. Informações da bateria
+echo -e "\n1. BATERIA:"
+if [ -d /sys/class/power_supply/BAT0 ]; then
+    echo "   Capacidade: $(cat /sys/class/power_supply/BAT0/capacity 2>/dev/null)%"
+    echo "   Status: $(cat /sys/class/power_supply/BAT0/status 2>/dev/null)"
+    echo "   Tecnologia: $(cat /sys/class/power_supply/BAT0/technology 2>/dev/null)"
+else
+    echo "   Nenhuma bateria detectada"
+fi
+
+# 2. Status da energia AC
+echo -e "\n2. ENERGIA AC:"
+if [ -f /sys/class/power_supply/AC/online ]; then
+    AC_STATUS=$(cat /sys/class/power_supply/AC/online)
+    if [ "$AC_STATUS" = "1" ]; then
+        echo "   ✅ Conectado"
+    else
+        echo "   ❌ Desconectado"
+    fi
+else
+    echo "   Não foi possível detectar status AC"
+fi
+
+# 3. Suporte a wake-on-AC
+echo -e "\n3. SUPORTE A WAKE-ON-AC:"
+if [ -f /proc/acpi/wakeup ]; then
+    grep -E "AC|LID" /proc/acpi/wakeup | while read line; do
+        if echo "$line" | grep -q "enabled"; then
+            echo "   ✅ $line"
+        else
+            echo "   ❌ $line"
+        fi
+    done
+else
+    echo "   Informação não disponível"
+fi
+
+# 4. Configurações atuais de energia
+echo -e "\n4. CONFIGURAÇÕES DE ENERGIA:"
+echo "   CriticalPowerAction: $(grep ^CriticalPowerAction /etc/UPower/UPower.conf 2>/dev/null | cut -d= -f2)"
+echo "   Lid close action (AC): $(gsettings get org.gnome.settings-daemon.plugins.power lid-close-ac-action 2>/dev/null)"
+echo "   Lid close action (bateria): $(gsettings get org.gnome.settings-daemon.plugins.power lid-close-battery-action 2>/dev/null)"
+
+# 5. Recomendações
+echo -e "\n5. RECOMENDAÇÕES:"
+echo "   • Configure a BIOS para 'Power on AC Restore'"
+echo "   • Instruções em: ~/Desktop/configurar_bios.txt"
+echo "   • O sistema desligará automaticamente em 2% de bateria"
+
+echo -e "\n========================================="
+EOF
+
+chmod +x "$INSTALL_DIR/diagnostico_hardware.sh"
+chown $USERNAME:$USERNAME "$INSTALL_DIR/diagnostico_hardware.sh"
+
+echo -e "${GREEN}✓ Script de diagnóstico de hardware criado${NC}"
+
+# ============================================
 #          SERVIÇO DE CONFIGURAÇÃO DE DISPLAY (PERSISTENTE)
 # ============================================
 
-echo -e "${GREEN}[7/8] Criando serviço persistente para configuração de displays...${NC}"
+echo -e "${GREEN}[+] Criando serviço persistente para configuração de displays...${NC}"
 
 sudo tee /etc/systemd/system/display-config.service > /dev/null << EOF
 [Unit]
@@ -364,7 +647,7 @@ RemainAfterExit=yes
 WantedBy=graphical.target
 EOF
 
-# Criar script de configuração de displays (versão persistente)
+# Criar script de configuração de displays
 cat > "$INSTALL_DIR/configure_display.sh" << 'EOF'
 #!/bin/bash
 
@@ -428,7 +711,6 @@ EOF
 chmod +x "$INSTALL_DIR/configure_display.sh"
 chown $USERNAME:$USERNAME "$INSTALL_DIR/configure_display.sh"
 
-# Habilitar o serviço para iniciar no boot
 sudo systemctl enable display-config.service
 echo -e "${GREEN}✓ Serviço de configuração de displays criado e habilitado${NC}"
 
@@ -436,14 +718,12 @@ echo -e "${GREEN}✓ Serviço de configuração de displays criado e habilitado$
 #          SCRIPT DE RECONFIGURAÇÃO MANUAL
 # ============================================
 
-echo -e "${GREEN}[8/8] Criando script para reconfigurar displays manualmente...${NC}"
+echo -e "${GREEN}[+] Criando script para reconfigurar displays manualmente...${NC}"
 
 cat > "$INSTALL_DIR/reconfigurar_display.sh" << 'EOF'
 #!/bin/bash
 
 # Script para reconfigurar displays manualmente
-# Útil quando conectar uma TV após o sistema já estar rodando
-
 echo "Reconfigurando displays..."
 /home/$(whoami)/kiosk/configure_display.sh
 echo "Pronto! Verifique se a TV está espelhada."
@@ -452,7 +732,7 @@ EOF
 chmod +x "$INSTALL_DIR/reconfigurar_display.sh"
 chown $USERNAME:$USERNAME "$INSTALL_DIR/reconfigurar_display.sh"
 
-# Adicionar atalho no desktop para facilitar
+# Atalho no desktop
 mkdir -p "$USER_HOME/Desktop"
 cat > "$USER_HOME/Desktop/reconfigurar_tv.desktop" << EOF
 [Desktop Entry]
@@ -475,56 +755,31 @@ echo -e "${GREEN}✓ Scripts de reconfiguração manual criados${NC}"
 # ============================================
 
 echo -e "${GREEN}[+] Criando script de execução do Chromium...${NC}"
-mkdir -p "$INSTALL_DIR"
 
 cat > "$INSTALL_DIR/run_chromium.sh" << 'EOF'
 #!/bin/bash
 
-# Script FINAL para Chromium no Kiosk
-# Com ambiente X11 explicitamente configurado
-
-# Configurações fixas
+# Script para Chromium no Kiosk
 USERNAME="$(whoami)"
 LOG_FILE="/var/log/kiosk_monitor.log"
 CHROMIUM_USER_DATA="/home/$USERNAME/.config/chromium-kiosk"
 KIOSK_URL="$1"
 
-# Função de log
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - [Chromium] $1" >> "$LOG_FILE"
 }
 
-log "=== INICIANDO CHROMIUM (FINAL) ==="
+log "=== INICIANDO CHROMIUM ==="
 log "URL: $KIOSK_URL"
 
-# FORÇAR variáveis de ambiente corretas
 export DISPLAY=:0
 export XAUTHORITY="/home/$USERNAME/.Xauthority"
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
 
-log "DISPLAY=$DISPLAY"
-log "XAUTHORITY=$XAUTHORITY"
-log "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
-
-# Verificar se o display está acessível
+# Verificar display
 if ! xdpyinfo &>/dev/null; then
     log "ERRO: Display $DISPLAY não acessível"
-    log "Tentando alternativas..."
-    
-    # Tentar outros displays
-    for disp in :0 :1 :2; do
-        if DISPLAY=$disp xdpyinfo &>/dev/null; then
-            export DISPLAY=$disp
-            log "Display alternativo encontrado: $disp"
-            break
-        fi
-    done
-fi
-
-# Verificar novamente
-if ! xdpyinfo &>/dev/null; then
-    log "ERRO CRÍTICO: Nenhum display X11 encontrado"
     exit 1
 fi
 
@@ -540,20 +795,7 @@ if [ -f "$CHROMIUM_USER_DATA/Default/Preferences" ]; then
     sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/' "$CHROMIUM_USER_DATA/Default/Preferences"
 fi
 
-# Pré-configurar preferências para evitar login
-cat > "$CHROMIUM_USER_DATA/Default/Preferences" << PREF
-{
-   "browser": {"check_default_browser": false},
-   "profile": {"content_settings": {"exceptions": {}}},
-   "sync": {"suppress_start": true},
-   "credentials_enable_service": false,
-   "profile.password_manager_enabled": false
-}
-PREF
-
-log "Executando Chromium..."
-
-# Executar Chromium com todas as variáveis
+# Executar Chromium
 flatpak run org.chromium.Chromium \
     --user-data-dir="$CHROMIUM_USER_DATA" \
     --kiosk \
@@ -562,9 +804,6 @@ flatpak run org.chromium.Chromium \
     --no-default-browser-check \
     --disable-sync \
     --disable-signin \
-    --disable-signin-promo \
-    --disable-password-generation \
-    --disable-password-leak-detection \
     --disable-component-update \
     --disable-background-networking \
     --noerrdialogs \
@@ -574,31 +813,18 @@ flatpak run org.chromium.Chromium \
     --disable-accelerated-2d-canvas \
     --disable-dev-shm-usage \
     --no-sandbox \
-    --disable-setuid-sandbox \
     --use-gl=swiftshader \
     --app="$KIOSK_URL" >> "$LOG_FILE" 2>&1 &
 
 PID=$!
 log "Chromium iniciado com PID: $PID"
 
-# Monitoramento avançado
 sleep 5
 if kill -0 $PID 2>/dev/null; then
     log "Chromium estável após 5 segundos"
-    
-    # Verificar janelas
-    sleep 2
-    WINDOW_COUNT=$(DISPLAY=:0 xdotool search --onlyvisible --class "chromium" 2>/dev/null | wc -l)
-    log "Janelas Chromium visíveis: $WINDOW_COUNT"
-    
     exit 0
 else
     log "ERRO: Chromium morreu rapidamente"
-    
-    # Diagnóstico
-    log "Processos: $(ps aux | grep -i chromium | grep -v grep | wc -l)"
-    log "Memória livre: $(free -h | grep Mem | awk '{print $4}')"
-    
     exit 1
 fi
 EOF
@@ -607,25 +833,21 @@ chmod +x "$INSTALL_DIR/run_chromium.sh"
 chown $USERNAME:$USERNAME "$INSTALL_DIR/run_chromium.sh"
 
 # ============================================
-#          SCRIPT DO KIOSK (MONITOR) - VERSÃO COM SCREENSHOTS SILENCIOSOS
+#          SCRIPT DO KIOSK (MONITOR)
 # ============================================
 
-echo -e "${GREEN}[+] Criando script do monitor (com screenshots silenciosos)...${NC}"
+echo -e "${GREEN}[+] Criando script do monitor...${NC}"
 
 cat > "$INSTALL_DIR/kiosk.sh" << 'EOF'
 #!/bin/bash
 
 # Script do Kiosk - Monitor Inteligente
-# VERSÃO COM SCREENSHOTS SILENCIOSOS (sem piscar a tela)
-
 LOG_FILE="/var/log/kiosk_monitor.log"
 SCREENSHOT_DIR="/var/log/kiosk_screenshots"
 KIOSK_URL="$1"
 
 CHECK_INTERVAL=30
-IDLE_THRESHOLD=120
 CRASH_THRESHOLD=3
-OFFLINE_CHECK_INTERVAL=60
 MAX_SCREENSHOTS=10
 
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -640,7 +862,7 @@ log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
 }
 
-# Função para capturar screenshot de diagnóstico (SILENCIOSO - sem piscar)
+# Captura silenciosa de screenshot
 capture_diagnostic_screenshot() {
     local reason="$1"
     local filename="$SCREENSHOT_DIR/diagnostic_$(date +%Y%m%d_%H%M%S)_${reason}.png"
@@ -648,19 +870,17 @@ capture_diagnostic_screenshot() {
     
     export DISPLAY=:0
     
-    log "Capturando screenshot silencioso (motivo: $reason)..."
-    
-    # MÉTODO 1: import (ImageMagick) - MAIS RECOMENDADO (silencioso)
+    # Método 1: import (ImageMagick) - silencioso
     if command -v import &> /dev/null; then
         if import -window root "$temp_file" 2>/dev/null; then
             mv "$temp_file" "$filename"
-            log "Screenshot salvo via import: $filename"
+            log "Screenshot salvo: $filename"
             cleanup_screenshots
             return 0
         fi
     fi
     
-    # MÉTODO 2: xwd + convert (também silencioso)
+    # Método 2: xwd (fallback)
     if command -v xwd &> /dev/null; then
         local xwd_file="${filename}.xwd"
         if xwd -root -out "$xwd_file" 2>/dev/null; then
@@ -676,38 +896,13 @@ capture_diagnostic_screenshot() {
         fi
     fi
     
-    # MÉTODO 3: ffmpeg (captura de quadro único - silencioso)
-    if command -v ffmpeg &> /dev/null; then
-        local resolution=$(xdpyinfo 2>/dev/null | grep dimensions | awk '{print $2}')
-        if [ -n "$resolution" ]; then
-            if ffmpeg -f x11grab -video_size "$resolution" -i :0.0 -vframes 1 -y "$temp_file" 2>/dev/null; then
-                mv "$temp_file" "$filename"
-                log "Screenshot salvo via ffmpeg: $filename"
-                cleanup_screenshots
-                return 0
-            fi
-        fi
-    fi
-    
-    # MÉTODO 4: gnome-screenshot (último recurso - pode piscar levemente)
-    if command -v gnome-screenshot &> /dev/null; then
-        # Usar opções silenciosas (sem borda, sem efeito)
-        if gnome-screenshot -f "$temp_file" --border-effect=none 2>/dev/null; then
-            mv "$temp_file" "$filename"
-            log "Screenshot salvo via gnome-screenshot: $filename"
-            cleanup_screenshots
-            return 0
-        fi
-    fi
-    
-    log "ERRO: Nenhum método de captura funcionou"
     return 1
 }
 
 check_chromium_health() {
     local pid
-    
     pid=$(pgrep -f "flatpak run.*chromium" | head -1)
+    
     if [[ -z "$pid" ]]; then
         log "ERRO: Chromium não encontrado"
         return 1
@@ -731,16 +926,12 @@ check_chromium_health() {
 
 restart_chromium() {
     log "REINICIANDO Chromium..."
-    
     capture_diagnostic_screenshot "pre_restart"
     
     pkill -f chromium
-    pkill -f "flatpak run.*chromium"
     sleep 3
     
-    log "Executando script externo..."
     /home/$(whoami)/kiosk/run_chromium.sh "$KIOSK_URL" &
-    
     CHROMIUM_PID=$!
     log "Chromium reiniciado (PID: $CHROMIUM_PID)"
     
@@ -753,18 +944,14 @@ restart_chromium() {
 }
 
 soft_refresh() {
-    local reason="$1"
-    
-    log "Refresh suave (motivo: $reason)"
+    log "Tentando refresh suave..."
     export DISPLAY=:0
-    
-    capture_diagnostic_screenshot "pre_refresh_${reason}"
+    capture_diagnostic_screenshot "pre_refresh"
     
     if xdotool search --onlyvisible --class "chromium" windowactivate --sync key F5 2>/dev/null; then
         log "F5 executado"
         return 0
     fi
-    
     return 1
 }
 
@@ -774,7 +961,6 @@ soft_refresh() {
 
 log "=== INICIANDO SISTEMA KIOSK ==="
 log "URL: $KIOSK_URL"
-log "Método de captura: silencioso (import/xwd/ffmpeg)"
 
 export DISPLAY=:0
 xset s off
@@ -799,7 +985,7 @@ while true; do
             restart_chromium
             consecutive_failures=0
         else
-            if ! soft_refresh "chromium_unhealthy"; then
+            if ! soft_refresh; then
                 log "Refresh falhou"
             else
                 consecutive_failures=0
@@ -857,8 +1043,12 @@ case "$1" in
         echo "Reconfigurando TV HDMI..."
         /home/$(whoami)/kiosk/reconfigurar_display.sh
         ;;
+    battery)
+        echo "Status da bateria:"
+        /home/$(whoami)/kiosk/diagnostico_hardware.sh
+        ;;
     *)
-        echo "Uso: $0 {restart|refresh|status|logs|tv}"
+        echo "Uso: $0 {restart|refresh|status|logs|tv|battery}"
         ;;
 esac
 EOF
@@ -867,10 +1057,10 @@ chmod +x "$INSTALL_DIR/emergency.sh"
 chown $USERNAME:$USERNAME "$INSTALL_DIR/emergency.sh"
 
 # ============================================
-#          SCRIPT DE DIAGNÓSTICO
+#          SCRIPT DE DIAGNÓSTICO GERAL
 # ============================================
 
-echo -e "${GREEN}[+] Criando script de diagnóstico...${NC}"
+echo -e "${GREEN}[+] Criando script de diagnóstico geral...${NC}"
 
 cat > "$INSTALL_DIR/diagnostico.sh" << 'EOF'
 #!/bin/bash
@@ -895,68 +1085,28 @@ else
     echo "   ❌ Display :0 não acessível"
 fi
 
-ls -la /tmp/.X11-unix/ 2>/dev/null | sed 's/^/   /'
-
-# 3. Monitores
-echo -e "\n3. MONITORES:"
-xrandr --current | grep " connected" | sed 's/^/   /'
-
-# 4. Chromium
-echo -e "\n4. CHROMIUM:"
+# 3. Chromium
+echo -e "\n3. CHROMIUM:"
 if pgrep -f "flatpak run.*chromium" > /dev/null; then
     PID=$(pgrep -f "flatpak run.*chromium" | head -1)
     echo "   ✅ Rodando (PID: $PID)"
-    ps -p $PID -o %cpu,%mem,etime | sed 's/^/   /'
-    
-    WINDOWS=$(DISPLAY=:0 xdotool search --onlyvisible --class "chromium" 2>/dev/null)
-    echo "   Janelas visíveis: $(echo "$WINDOWS" | wc -l)"
 else
     echo "   ❌ Chromium não está rodando"
 fi
 
-# 5. Flatpak
-echo -e "\n5. FLATPAK:"
-flatpak list | grep chromium | sed 's/^/   /' || echo "   Chromium não encontrado"
+# 4. Configurações de energia
+echo -e "\n4. ENERGIA:"
+echo "   Bateria crítica: $(grep CriticalPowerAction /etc/UPower/UPower.conf 2>/dev/null | cut -d= -f2)"
+echo "   Monitor AC: $(systemctl is-active monitor-ac.service 2>/dev/null)"
 
-# 6. Ferramentas de captura
-echo -e "\n6. FERRAMENTAS DE CAPTURA:"
-echo "   import (ImageMagick): $(command -v import &>/dev/null && echo '✅' || echo '❌')"
-echo "   xwd: $(command -v xwd &>/dev/null && echo '✅' || echo '❌')"
-echo "   ffmpeg: $(command -v ffmpeg &>/dev/null && echo '✅' || echo '❌')"
-echo "   gnome-screenshot: $(command -v gnome-screenshot &>/dev/null && echo '✅' || echo '❌')"
-
-# 7. Configurações de energia
-echo -e "\n7. ENERGIA:"
-echo "   Suspensão: $(systemctl is-enabled sleep.target 2>/dev/null || echo 'desabilitado')"
-
-# 8. Login automático
-echo -e "\n8. LOGIN:"
-if [ -f /etc/lightdm/lightdm.conf.d/50-kiosk.conf ]; then
-    echo "   ✅ Login automático configurado"
+# 5. Bateria
+echo -e "\n5. BATERIA:"
+if [ -f /sys/class/power_supply/BAT0/capacity ]; then
+    echo "   Carga: $(cat /sys/class/power_supply/BAT0/capacity)%"
+    echo "   Status: $(cat /sys/class/power_supply/BAT0/status)"
 else
-    echo "   ❌ Login automático não configurado"
+    echo "   Nenhuma bateria detectada"
 fi
-
-# 9. Configurações pós-reboot
-echo -e "\n9. PÓS-REBOOT:"
-if [ -f "$HOME/.kiosk_configured" ]; then
-    echo "   ✅ Configurações pós-reboot já aplicadas"
-else
-    echo "   ⚠️  Configurações pós-reboot pendentes"
-fi
-
-# 10. Serviço de display
-echo -e "\n10. SERVIÇO DE DISPLAY:"
-if systemctl is-enabled display-config.service &>/dev/null; then
-    echo "   ✅ Serviço de display habilitado (persistente)"
-    echo "   Última configuração: $(tail -1 /var/log/kiosk_display.log 2>/dev/null || echo 'n/a')"
-else
-    echo "   ❌ Serviço de display não configurado"
-fi
-
-# 11. Logs recentes
-echo -e "\n11. ÚLTIMOS LOGS:"
-tail -10 /var/log/kiosk_monitor.log 2>/dev/null | sed 's/^/   /' || echo "   Log não encontrado"
 
 echo -e "\n========================================="
 EOF
@@ -983,32 +1133,16 @@ User=$USERNAME
 Group=$USERNAME
 WorkingDirectory=$USER_HOME
 
-# Ambiente completo e forçado
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=$USER_HOME/.Xauthority
 Environment=XDG_RUNTIME_DIR=/run/user/$(id -u $USERNAME)
-Environment=HOME=$USER_HOME
-Environment=USER=$USERNAME
-Environment=LOGNAME=$USERNAME
 
-# Garantir que o X11 esteja pronto
 ExecStartPre=/bin/sleep 5
 ExecStartPre=/bin/bash -c 'while ! xdpyinfo -display :0 >/dev/null 2>&1; do sleep 1; done'
-
-# Executar o monitor
 ExecStart=/bin/bash $INSTALL_DIR/kiosk.sh "$KIOSK_URL"
 
-# Políticas de restart
 Restart=always
 RestartSec=10
-
-# Limites
-LimitNOFILE=65536
-LimitNPROC=65536
-
-# Logs
-StandardOutput=journal
-StandardError=journal
 
 [Install]
 WantedBy=graphical.target
@@ -1022,7 +1156,6 @@ if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]] && [[ -n "$VNC_PASSWORD" ]]; then
     echo -e "${GREEN}[+] Configurando VNC...${NC}"
     sudo apt-get install -y vino
     
-    # Configurações serão aplicadas no pós-reboot
     mkdir -p "$INSTALL_DIR/vnc-config"
     
     ENCODED_PASSWORD=$(echo -n "$VNC_PASSWORD" | base64)
@@ -1038,15 +1171,12 @@ gsettings set org.gnome.Vino authentication-methods "['vnc']"
 gsettings set org.gnome.Vino vnc-password "$ENCODED_PASSWORD"
 gsettings set org.gnome.Vino notify-on-connect false
 gsettings set org.gnome.Vino icon-visibility 'never'
-
-# Iniciar VNC
 /usr/lib/vino/vino-server &
 EOF
     
     chmod +x "$INSTALL_DIR/vnc-config/setup.sh"
     chown $USERNAME:$USERNAME "$INSTALL_DIR/vnc-config/setup.sh"
     
-    # Adicionar ao autostart
     cat > "$USER_HOME/.config/autostart/vino-config.desktop" << EOF
 [Desktop Entry]
 Type=Application
@@ -1061,7 +1191,6 @@ EOF
     chmod +x "$USER_HOME/.config/autostart/vino-config.desktop"
     
     sudo ufw allow 5900/tcp
-    
     echo -e "${GREEN}✓ VNC será configurado no primeiro login${NC}"
 fi
 
@@ -1072,16 +1201,11 @@ fi
 echo -e "${GREEN}[+] Instalando Chromium via Flatpak...${NC}"
 flatpak install -y flathub org.chromium.Chromium
 
-# Conceder permissões
 flatpak override --user --socket=x11 --share=network --device=dri org.chromium.Chromium
 
-# Verificar instalação
-CHROMIUM_VERSION=""
 if flatpak list | grep -q org.chromium.Chromium; then
     CHROMIUM_VERSION=$(flatpak info org.chromium.Chromium | grep Version | awk '{print $2}')
-    echo -e "${GREEN}✓ Chromium $CHROMIUM_VERSION instalado com sucesso${NC}"
-    
-    # Pré-criar diretório de perfil
+    echo -e "${GREEN}✓ Chromium $CHROMIUM_VERSION instalado${NC}"
     mkdir -p "$CHROMIUM_USER_DATA"
     chown -R $USERNAME:$USERNAME "$CHROMIUM_USER_DATA"
 else
@@ -1094,15 +1218,11 @@ fi
 
 echo -e "${GREEN}[+] Ajustando permissões de log...${NC}"
 
-sudo touch /var/log/kiosk_monitor.log
-sudo touch /var/log/kiosk_emergency.log
-sudo touch /var/log/kiosk_display.log
-sudo chown $USERNAME:$USERNAME /var/log/kiosk_monitor.log
-sudo chown $USERNAME:$USERNAME /var/log/kiosk_emergency.log
-sudo chown $USERNAME:$USERNAME /var/log/kiosk_display.log
-sudo chmod 644 /var/log/kiosk_monitor.log
-sudo chmod 644 /var/log/kiosk_emergency.log
-sudo chmod 644 /var/log/kiosk_display.log
+for log in kiosk_monitor.log kiosk_emergency.log kiosk_display.log kiosk_graceful_shutdown.log kiosk_ac_wake.log monitor_ac.log; do
+    sudo touch "/var/log/$log"
+    sudo chown $USERNAME:$USERNAME "/var/log/$log"
+    sudo chmod 644 "/var/log/$log"
+done
 
 sudo mkdir -p /var/log/kiosk_screenshots
 sudo chown -R $USERNAME:$USERNAME /var/log/kiosk_screenshots
@@ -1117,7 +1237,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable kiosk.service
 
 # ============================================
-#          RELATÓRIO FINAL DETALHADO
+#          RELATÓRIO FINAL
 # ============================================
 
 clear
@@ -1126,90 +1246,45 @@ echo -e "${GREEN}║         INSTALAÇÃO CONCLUÍDA - RELATÓRIO DO SISTEMA    
 echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Informações do Sistema Operacional
 echo -e "${BLUE}📌 SISTEMA OPERACIONAL${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "Distribuição: $(lsb_release -ds 2>/dev/null || cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')"
+echo -e "Distribuição: $(lsb_release -ds 2>/dev/null)"
 echo -e "Kernel: $(uname -r)"
-echo -e "Arquitetura: $(uname -m)"
-echo -e "Hostname: $(hostname)"
 echo -e "Usuário: $USERNAME"
+echo -e "Hostname: $(hostname)"
 echo ""
 
-# Ambiente Gráfico
-echo -e "${BLUE}🖥️  AMBIENTE GRÁFICO${NC}"
+echo -e "${BLUE}💻 CONFIGURAÇÕES PARA NOTEBOOK${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "Display Manager: LightDM"
-echo -e "Sessão: Cinnamon"
-echo -e "Login Automático: ${GREEN}Configurado para $USERNAME${NC}"
+echo -e "Bateria crítica: ${GREEN}DESLIGAR em 2%${NC}"
+echo -e "Monitor AC: ${GREEN}Serviço ativo${NC}"
+echo -e "Wake-on-AC: ${YELLOW}Depende da BIOS (ver instruções)${NC}"
+echo -e "Diagnóstico: ./diagnostico_hardware.sh"
+echo -e "Instruções BIOS: ~/Desktop/configurar_bios.txt"
 echo ""
 
-# Monitores
-echo -e "${BLUE}🖥️  CONFIGURAÇÃO DE MONITORES${NC}"
-echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "Duplicação HDMI: ${GREEN}Persistente (ativa em todo boot)${NC}"
-echo -e "Serviço: display-config.service"
-echo -e "Log: /var/log/kiosk_display.log"
-echo -e "Reconfigurar manual: ./reconfigurar_display.sh"
-echo ""
-
-# Chromium
 echo -e "${BLUE}🌐 CHROMIUM${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "Versão: $CHROMIUM_VERSION"
-echo -e "Modo: Kiosk / PWA"
 echo -e "URL: $KIOSK_URL"
-echo -e "Perfil: $CHROMIUM_USER_DATA"
 echo ""
 
-# Configurações de Energia
-echo -e "${BLUE}⚡ CONFIGURAÇÕES DE ENERGIA${NC}"
-echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "Bloqueio de tela: ${GREEN}Será desabilitado no primeiro login${NC}"
-echo -e "Suspensão: ${GREEN}Desabilitada (sistema)${NC}"
-echo -e "Hibernação: ${GREEN}Desabilitada${NC}"
-echo ""
-
-# Screenshots
-echo -e "${BLUE}📸 SCREENSHOTS DE DIAGNÓSTICO${NC}"
-echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "Modo: ${GREEN}SILENCIOSO (sem piscar a tela)${NC}"
-echo -e "Métodos disponíveis: import (ImageMagick), xwd, ffmpeg"
-echo -e "Local: /var/log/kiosk_screenshots/"
-echo ""
-
-# Acesso Remoto
 echo -e "${BLUE}🔌 ACESSO REMOTO${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "SSH: ${GREEN}✅ Ativo${NC} - ssh $USERNAME@$IP_ADDR"
+echo -e "SSH: ${GREEN}ssh $USERNAME@$IP_ADDR${NC}"
 if [[ "$CONFIG_VNC" =~ ^[Ss]$ ]]; then
-    echo -e "VNC: ${YELLOW}⚠️  Será configurado no primeiro login${NC}"
+    echo -e "VNC: ${GREEN}Configurado (porta 5900)${NC}"
 else
-    echo -e "VNC: ${YELLOW}⚠️  Não configurado${NC}"
+    echo -e "VNC: ${YELLOW}Não configurado${NC}"
 fi
 echo ""
 
-# Logs e Diagnóstico
-echo -e "${BLUE}📊 FERRAMENTAS DE DIAGNÓSTICO${NC}"
+echo -e "${BLUE}📊 FERRAMENTAS${NC}"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "Scripts disponíveis em: $INSTALL_DIR"
+echo -e "Scripts em: $INSTALL_DIR"
 echo -e "  • Diagnóstico: ./diagnostico.sh"
-echo -e "  • Emergência: ./emergency.sh {restart|refresh|status|logs|tv}"
-echo -e "  • Reconfigurar TV: ./reconfigurar_display.sh"
-echo -e "  • Log principal: tail -f /var/log/kiosk_monitor.log"
-echo -e "  • Log do display: tail -f /var/log/kiosk_display.log"
-echo ""
-
-# Próximos passos
-echo -e "${YELLOW}📌 PRÓXIMOS PASSOS APÓS O REBOOT:${NC}"
-echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "1. O sistema reiniciará automaticamente"
-echo -e "2. O login automático será ativado"
-echo -e "3. O serviço de display configurará a TV HDMI (se conectada)"
-echo -e "4. Configurações de tela serão aplicadas"
-echo -e "5. O Chromium iniciará em modo kiosk"
-echo -e "6. Screenshots de diagnóstico serão SILENCIOSOS"
-echo -e "7. O VNC será configurado (se selecionado)"
+echo -e "  • Emergência: ./emergency.sh {restart|refresh|status|logs|tv|battery}"
+echo -e "  • Desligamento limpo: ./graceful_shutdown.sh"
 echo ""
 
 echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
