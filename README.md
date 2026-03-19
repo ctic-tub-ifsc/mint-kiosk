@@ -1,213 +1,218 @@
-# 🖥️ Mint Kiosk - Transforme seu Linux Mint em um Painel Digital
+# Mint Kiosk - Sistema de Quiosque Digital para Linux Mint
 
-Este script transforma qualquer computador com Linux Mint em um **painel digital automático** - perfeito para murais de avisos, TV corporativa, displays de informações ou aplicações PWA.
+Este script transforma o Linux Mint em um quiosque digital inteligente, ideal para murais de avisos, painéis informativos e aplicações PWA. O sistema é auto-gerenciável, com detecção inteligente de falhas, recuperação automática e suporte otimizado para notebooks.
 
-✅ Testado no **Linux Mint 22.3**  
-⚙️ Funciona em qualquer PC com Linux Mint
+Testado no Linux Mint 22.3 Cinnamon.
 
 ---
 
-## 🚀 Instalação em UM COMANDO
+## Instalação em Comando Único
 
 ```bash
 sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/ctic-tub-ifsc/mint-kiosk/refs/heads/main/install_kiosk.sh)"
 ```
 
-**O que vai acontecer:**
-1. O script vai pedir a **URL do site** que você quer mostrar
-2. Vai perguntar se quer **acesso remoto VNC** (opcional)
-3. Faz tudo sozinho e reinicia o PC
-4. Pronto! Na próxima inicialização já estará funcionando
+Durante a instalação será solicitado:
+- URL do site/mural a ser exibido
+- Configuração de acesso VNC (opcional)
 
 ---
 
-## ✨ O que esse script faz por você (de forma simples)
+## Funcionalidades Principais
 
-### 📺 **1. Vira um painel automático**
-- Abre o navegador em tela cheia (modo kiosk)
-- Esconde o mouse quando parado
-- Desliga protetor de tela e suspensão
-- **Novo:** Se conectar uma TV via HDMI, ela já aparece espelhada automaticamente!
+### 1. Exibição em Modo Quiosque
+- Chromium em tela cheia (kiosk mode)
+- Sem barras de ferramentas ou infobars
+- Cursor do mouse oculto quando inativo
+- Login automático configurado
 
-### 🧠 **2. Se cuida sozinho (monitoramento inteligente)**
-- Fica de olho no navegador a cada 30 segundos
-- Se perceber que travou, tenta dar um **F5** automático
-- Se não resolver, reinicia o navegador
-- Se mesmo assim não funcionar, recarrega tudo do zero
+### 2. Monitoramento Inteligente
+- Verificação do processo Chromium a cada 30 segundos
+- Detecção de janelas congeladas ou não responsivas
+- Refresh suave (F5) automático ao primeiro sinal de problema
+- Reinicialização completa após falhas consecutivas
+- Screenshots de diagnóstico capturados silenciosamente (sem piscar a tela)
 
-### 📸 **3. Tira "fotos" quando dá problema**
-- Quando algo errado acontece, tira um **print da tela**
-- Salva na pasta `/var/log/kiosk_screenshots/`
-- Assim você pode ver **o que estava na tela na hora do erro**
-- Guarda só os últimos 10 prints (não enche o disco)
+### 3. Configurações de Energia
+- Bloqueio de tela desabilitado permanentemente
+- Suspensão e hibernação desabilitadas
+- Ação em bateria crítica configurada para desligamento limpo (em 2%)
+- Fechamento da tampa ignorado (não suspende)
 
-### 📊 **4. Gera relatório completo no final**
-- Mostra versão do sistema, kernel, ambiente gráfico
-- Informa versão do Chromium instalado
-- Diz se o SSH está ativo e qual IP usar
-- Mostra se o VNC foi configurado
+### 4. Suporte a Notebooks
+- Desligamento limpo quando bateria atinge nível crítico
+- Serviço de monitoramento de energia AC
+- Script de diagnóstico de hardware (bateria, AC, wake-up)
+- Instruções para configuração de "Power on AC Restore" na BIOS
 
-### 🔌 **5. Acesso remoto garantido**
-- **SSH** ativado automático (porta 22)
-- **VNC** opcional para controle remoto da tela
-- Firewall liberado só para o necessário
+### 5. Duplicação Automática para TV HDMI
+- Detecta automaticamente quando uma TV é conectada via HDMI
+- Configura duplicação de tela (mirror) com resolução adequada
+- Serviço systemd dedicado executado em todo boot
+- Script para reconfiguração manual quando necessário
+
+### 6. Acesso Remoto
+- SSH ativado automaticamente (porta 22)
+- VNC opcional com configuração no primeiro login
+- Firewall configurado para as portas necessárias
 
 ---
 
-## 📋 O que você precisa saber depois de instalado
+## Dependências Instaladas
 
-### Comandos úteis para o dia a dia
+O script instala automaticamente os seguintes pacotes:
+- unclutter, xdotool (controle de mouse e teclado)
+- curl, wget (transferência de dados)
+- x11-utils, xprintidle, x11-xserver-utils, x11-apps (utilitários X11)
+- imagemagick, gnome-screenshot, ffmpeg (captura de tela)
+- flatpak, mesa-utils (gerenciamento de pacotes e gráficos)
+- lightdm, lightdm-settings (gerenciador de login)
+- upower, acpi (gerenciamento de energia)
+- openssh-server, vino (acesso remoto)
 
+---
+
+## Comandos de Verificação
+
+### Status do Serviço
 ```bash
-# Ver se o serviço está rodando
 sudo systemctl status kiosk.service
-
-# Ver os logs em tempo real (o que está acontecendo)
 sudo journalctl -u kiosk.service -f
-
-# Ver o log principal do painel
 tail -f /var/log/kiosk_monitor.log
-
-# Se o navegador travar, force um F5 manual
-sudo systemctl restart kiosk.service
 ```
 
-### Scripts prontos na pasta do kiosk
-
-O script cria alguns arquivos na pasta `/home/seu-usuario/kiosk/`:
-
+### Scripts Disponíveis (em /home/usuario/kiosk/)
 ```bash
-# Diagnóstico rápido do sistema
+# Diagnóstico geral do sistema
 ~/kiosk/diagnostico.sh
 
-# Emergência (se precisar reiniciar ou dar F5 manual)
-~/kiosk/emergency.sh restart   # reinicia o navegador
-~/kiosk/emergency.sh refresh   # dá um F5
-~/kiosk/emergency.sh status    # mostra o que está rodando
-~/kiosk/emergency.sh logs      # mostra os últimos logs
+# Diagnóstico específico para hardware (bateria, AC)
+~/kiosk/diagnostico_hardware.sh
+
+# Emergência - recuperação manual
+~/kiosk/emergency.sh restart   # reinicia o Chromium
+~/kiosk/emergency.sh refresh   # envia F5
+~/kiosk/emergency.sh status    # mostra processos e janelas
+~/kiosk/emergency.sh logs      # exibe logs recentes
+~/kiosk/emergency.sh tv        # reconfigura TV HDMI
+~/kiosk/emergency.sh battery   # mostra status da bateria
+
+# Reconfigurar TV HDMI manualmente
+~/kiosk/reconfigurar_display.sh
+
+# Desligamento limpo (usado em bateria crítica)
+sudo ~/kiosk/graceful_shutdown.sh
 ```
 
 ---
 
-## 🖥️ Conectando uma TV (duplicação automática)
+## Configurações Automáticas
 
-**Como funciona:**
-1. Conecte a TV via HDMI
-2. O sistema detecta automaticamente
-3. Duplica a tela do monitor principal para a TV
-4. Funciona tanto no boot quanto se conectar depois
-
-**Não precisa fazer nada - já está configurado!**
-
----
-
-## 🔧 Configurações que o script faz automaticamente
-
-| O que | Como fica |
-|------|-----------|
-| **Login** | Automático (não pede senha) |
-| **Tela** | Nunca bloqueia |
-| **Suspensão** | Desligada (nunca hiberna) |
-| **Mouse** | Some depois de 0.5s parado |
-| **Chromium** | Instalado via Flatpak (sem depender do snap) |
-| **Logs** | Salvos em `/var/log/kiosk_monitor.log` |
-| **Prints de erro** | Salvos em `/var/log/kiosk_screenshots/` |
+| Item | Configuração Aplicada |
+|------|----------------------|
+| Login | Automático, sem solicitação de senha |
+| Bloqueio de tela | Desabilitado permanentemente |
+| Suspensão | Desabilitada (AC e bateria) |
+| Hibernação | Desabilitada |
+| Fechar tampa | Ignorado (não suspende) |
+| Bateria crítica | Desligamento limpo em 2% |
+| Monitoramento AC | Serviço ativo (monitor-ac.service) |
+| Duplicação HDMI | Serviço persistente (display-config.service) |
+| Chromium | Instalado via Flatpak, sem keyring |
+| Screenshots | Captura silenciosa (import/xwd/ffmpeg) |
 
 ---
 
-## 📁 Onde ficam os arquivos importantes
+## Estrutura de Arquivos
 
 ```
-/var/log/kiosk_monitor.log           # Log principal (use: tail -f)
-/var/log/kiosk_screenshots/           # Prints de quando deu erro
-/home/seu-usuario/kiosk/              # Scripts do sistema
-/etc/systemd/system/kiosk.service     # Serviço que roda no boot
+/var/log/
+├── kiosk_monitor.log           # Log principal do monitor
+├── kiosk_screenshots/          # Screenshots de diagnóstico
+├── kiosk_display.log           # Log da configuração de displays
+├── kiosk_graceful_shutdown.log # Log de desligamento por bateria
+├── monitor_ac.log              # Log do monitor de energia AC
+└── kiosk_ac_wake.log           # Log da configuração wake-on-AC
+
+/home/usuario/kiosk/
+├── kiosk.sh                     # Script principal do monitor
+├── run_chromium.sh              # Executa o Chromium
+├── pos_reboot.sh                 # Configurações pós-reboot
+├── configure_display.sh          # Configura displays
+├── reconfigurar_display.sh       # Reconfiguração manual
+├── configure_ac_wake.sh          # Configura wake-on-AC
+├── graceful_shutdown.sh          # Desligamento limpo
+├── diagnostico.sh                # Diagnóstico geral
+├── diagnostico_hardware.sh       # Diagnóstico de hardware
+├── emergency.sh                  # Recuperação manual
+└── vnc-config/                   # Configuração do VNC
+
+/etc/systemd/system/
+├── kiosk.service                 # Serviço do kiosk
+├── display-config.service        # Configuração de displays
+└── monitor-ac.service            # Monitor de energia AC
+
+/etc/lightdm/lightdm.conf.d/50-kiosk.conf  # Login automático
+/etc/systemd/logind.conf.d/50-kiosk.conf    # Configurações de energia
+/etc/UPower/UPower.conf                     # Ação em bateria crítica
 ```
 
 ---
 
-## 🆘 Problemas comuns (e soluções rápidas)
+## Problemas Comuns e Soluções
 
-### "O navegador fechou sozinho"
+### Chromium não inicia ou fecha sozinho
 ```bash
 sudo systemctl restart kiosk.service
 ```
 
-### "A tela está preta, mas o sistema parece rodar"
+### Tela preta mas sistema parece ativo
 ```bash
 ~/kiosk/emergency.sh restart
 ```
 
-### "Quero ver o que aconteceu ontem"
+### TV HDMI conectada mas não duplica
 ```bash
-grep "ERRO" /var/log/kiosk_monitor.log
-```
-
-### "Conectei uma TV mas não duplicou"
-```bash
-# O sistema já tenta fazer sozinho, mas pode esperar alguns segundos
-# Se não funcionar, reinicie o serviço de display:
 sudo systemctl restart display-config.service
+# ou
+~/kiosk/reconfigurar_display.sh
+```
+
+### Notebook não liga ao conectar o carregador
+```bash
+# Verificar instruções da BIOS
+cat ~/Desktop/configurar_bios.txt
+```
+
+### Verificar status da bateria
+```bash
+~/kiosk/emergency.sh battery
+# ou
+~/kiosk/diagnostico_hardware.sh
 ```
 
 ---
 
-## 📊 Relatório gerado no final da instalação
+## Relatório de Instalação
 
-Ao terminar a instalação, o script mostra um relatório como este:
-
-```
-📌 SISTEMA OPERACIONAL
-━━━━━━━━━━━━━━━━━━━━━━
-Distribuição: Linux Mint 22.3
-Kernel: 6.14.0-37-generic
-Usuário: tubarao
-
-🖥️  AMBIENTE GRÁFICO
-━━━━━━━━━━━━━━━━━━━━━━
-Login Automático: ✅ Configurado
-Duplicação HDMI: ✅ Ativada
-
-🌐 CHROMIUM
-━━━━━━━━━━━━━━━━━━━━━━
-Versão: 145.0.7632.159
-URL: https://mural.exemplo.com
-
-🔌 ACESSO REMOTO
-━━━━━━━━━━━━━━━━━━━━━━
-SSH: ✅ ssh tubarao@192.168.1.100
-VNC: ✅ Porta 5900
-```
+Ao final da instalação, o script exibe um relatório com:
+- Versão do sistema operacional e kernel
+- Configurações de login automático
+- Status da duplicação HDMI
+- Versão do Chromium e URL configurada
+- Ações configuradas para bateria crítica
+- Endereço IP para acesso SSH
+- Lista de scripts disponíveis
 
 ---
 
-## 📚 Quer se aprofundar?
+## Documentação Adicional
 
-Temos um guia completo de resolução de problemas:
-
-👉 **[Guia de Resolução de Problemas](resolucao_de_problemas.md)**  
-
-Lá você encontra:
-- Análise detalhada de causas de erro
-- Como interpretar os screenshots
-- Configurações avançadas
-- Recuperação de emergência
-
----
-
-## 🎯 Resumo: o que você ganha com isso
-
-✅ **Zero configuração manual** - roda sozinho  
-✅ **Auto-recuperável** - se travar, tenta consertar  
-✅ **Acesso remoto** - SSH e VNC prontos  
-✅ **Diagnóstico fácil** - logs e prints de erro  
-✅ **TV automática** - só conectar o HDMI  
-✅ **Sem surpresas** - nunca desliga ou bloqueia a tela  
+Para informações detalhadas sobre solução de problemas, consulte:
+[Guia de Resolução de Problemas](resolucao_de_problemas.md)
 
 ---
 
 **CTIC - Campus Tubarão**  
 Instituto Federal de Santa Catarina
-
-**Dúvidas?** Abra uma issue no GitHub ou fale com a equipe!
 ```
